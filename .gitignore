@@ -4,7 +4,6 @@
 .idea/
 .conda/
 *.zip
-*.txt
 *.pid
 docs/
 output/
