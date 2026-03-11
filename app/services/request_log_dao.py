@@ -173,8 +173,8 @@ class RequestLogDAO:
         query = """
             SELECT
                 COUNT(*) as total_requests,
-                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful_requests,
-                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed_requests,
+                SUM(CASE WHEN success = true THEN 1 ELSE 0 END) as successful_requests,
+                SUM(CASE WHEN success = false THEN 1 ELSE 0 END) as failed_requests,
                 SUM(input_tokens) as input_tokens,
                 SUM(output_tokens) as output_tokens,
                 SUM(total_tokens) as total_tokens,
@@ -298,7 +298,7 @@ class RequestLogDAO:
             SELECT
                 {bucket_expression} as {bucket_alias},
                 COUNT(*) as total_requests,
-                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful_requests,
+                SUM(CASE WHEN success = true THEN 1 ELSE 0 END) as successful_requests,
                 SUM(input_tokens) as input_tokens,
                 SUM(output_tokens) as output_tokens,
                 SUM(total_tokens) as total_tokens,
@@ -344,8 +344,8 @@ class RequestLogDAO:
             SELECT
                 model,
                 COUNT(*) as total,
-                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success,
-                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN success = true THEN 1 ELSE 0 END) as success,
+                SUM(CASE WHEN success = false THEN 1 ELSE 0 END) as failed,
                 SUM(input_tokens) as input_tokens,
                 SUM(output_tokens) as output_tokens,
                 SUM(total_tokens) as total_tokens,

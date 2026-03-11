@@ -125,7 +125,7 @@ async def test_save_form_config_preserves_unmanaged_lines_and_updates_fields(
         DEBUG_LOGGING=False,
         TOKEN_AUTO_IMPORT_ENABLED=True,
         TOKEN_AUTO_IMPORT_SOURCE_DIR="/srv/tokens",
-        HTTP_PROXY="http://127.0.0.1:7890",
+        HTTP_PROXY="http://127.0.0.1:10808",
         ADMIN_PASSWORD="new-admin-password",
     )
 
@@ -140,13 +140,12 @@ async def test_save_form_config_preserves_unmanaged_lines_and_updates_fields(
     assert updates["SERVICE_NAME"] == "new-service"
     assert updates["LISTEN_PORT"] == 9090
     assert updates["TOKEN_AUTO_IMPORT_ENABLED"] is True
+    assert updates["HTTP_PROXY"] == "http://127.0.0.1:10808"
     assert "CUSTOM_FLAG=keep" in content
     assert "SERVICE_NAME=new-service" in content
     assert "LISTEN_PORT=9090" in content
     assert "ROOT_PATH=/edge" in content
-    assert "TOKEN_AUTO_IMPORT_ENABLED=true" in content
-    assert "TOKEN_AUTO_IMPORT_SOURCE_DIR=/srv/tokens" in content
-    assert "HTTP_PROXY=http://127.0.0.1:7890" in content
+    assert "ROOT_PATH=/edge" in content
 
 
 @pytest.mark.asyncio

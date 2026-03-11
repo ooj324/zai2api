@@ -482,7 +482,7 @@ CONFIG_SECTIONS: tuple[ConfigSectionSpec, ...] = (
                 label="代理服务器地址",
                 description="统一代理，支持 http://, https://, socks5:// 等格式。例如：http://127.0.0.1:10808 或 socks5://127.0.0.1:1080。",
                 value_type="str",
-                default_value="http://127.0.0.1:10808",
+                default_value="",
                 placeholder="http://127.0.0.1:10808",
                 wide=True,
             ),

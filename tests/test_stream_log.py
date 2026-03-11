@@ -12,7 +12,7 @@ async def mock_stream():
     yield 'data: [DONE]\n\n'
 
 async def main():
-    source_info = RequestSourceInfo(endpoint="/v1/chat/completions", source="test", protocol="openai", client_name="test")
+    source_info = RequestSourceInfo(endpoint="/v1/chat/completions", source="test", protocol="openai", client_name="test", user_agent="test-agent")
     started_at = time.perf_counter()
     await asyncio.sleep(0.1) # Simulate TTFB overhead
     stream = wrap_openai_stream_with_logging(
