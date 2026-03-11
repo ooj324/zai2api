@@ -87,28 +87,31 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         
-        # 自动迁移检查（仅适用于简单结构升级，如添加缺失字段）
+        # 自动迁移检查（使用 Alembic）
         try:
-            dialect = conn.dialect.name
-            if dialect == "sqlite":
-                result = await conn.execute(text("PRAGMA table_info(tokens)"))
-                columns = [row[1] for row in result.fetchall()]
-            elif dialect == "postgresql":
-                result = await conn.execute(text(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name='tokens'"
-                ))
-                columns = [row[0] for row in result.fetchall()]
-            else:
-                columns = []
-
-            # 补充 last_chat_cleanup 列
-            if columns and "last_chat_cleanup" not in columns:
-                logger.info("🔧 自动数据库迁移: tokens 表新增 last_chat_cleanup 列...")
-                await conn.execute(text("ALTER TABLE tokens ADD COLUMN last_chat_cleanup DATETIME"))
-                logger.info("✅ 迁移成功")
+            from alembic.config import Config
+            from alembic import command
+            import os
+            
+            logger.info("🔧 自动数据库迁移: 准备执行 Alembic...")
+            
+            # 获取项目根目录
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            alembic_cfg = Config(os.path.join(base_dir, "alembic.ini"))
+            alembic_cfg.set_main_option("script_location", os.path.join(base_dir, "migrations"))
+            
+            def run_upgrade(connection):
+                logger.info("  -> run_upgrade: setting connection...")
+                alembic_cfg.attributes['connection'] = connection
+                logger.info("  -> run_upgrade: calling command.upgrade...")
+                command.upgrade(alembic_cfg, "head")
+                logger.info("  -> run_upgrade: command.upgrade finished")
+                
+            logger.info("🔧 自动数据库迁移: 正在 run_sync(run_upgrade)...")
+            await conn.run_sync(run_upgrade)
+            logger.info("✅ 迁移成功")
         except Exception as e:
-            logger.error(f"⚠️ 自动检查或增加新列时出错: {e}")
+            logger.error(f"⚠️ 自动迁移过程中出错: {e}")
 
 async def close_db():
     """关闭数据库连接"""
