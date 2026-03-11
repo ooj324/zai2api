@@ -53,7 +53,7 @@ def upgrade() -> None:
     sa.Column('token', sa.String(), nullable=False),
     sa.Column('token_type', sa.String(), nullable=False),
     sa.Column('priority', sa.Integer(), server_default=sa.text('0'), nullable=False),
-    sa.Column('is_enabled', sa.Boolean(), server_default=sa.text('1'), nullable=False),
+    sa.Column('is_enabled', sa.Boolean(), server_default=sa.text('true'), nullable=False),
     sa.Column('created_at', sa.DateTime(), server_default=sa.func.now(), nullable=False),
     sa.Column('last_chat_cleanup', sa.DateTime(), nullable=True),
     sa.PrimaryKeyConstraint('id'),
