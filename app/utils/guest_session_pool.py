@@ -61,10 +61,12 @@ class GuestSessionPool:
         pool_size: int = 3,
         session_max_age: int = 480,
         maintenance_interval: int = 30,
+        max_failures: int = 10,
     ):
         self.pool_size = max(1, pool_size)
         self.session_max_age = max(60, session_max_age)
         self.maintenance_interval = max(10, maintenance_interval)
+        self.max_failures = max(1, max_failures)
         self._lock = Lock()
         self._sessions: Dict[str, GuestSession] = {}
         self._maintenance_task: Optional[asyncio.Task] = None
@@ -203,14 +205,14 @@ class GuestSessionPool:
                 and session.user_id not in excluded
             ]
 
-    async def _ensure_capacity(self):
-        """补齐匿名会话池容量。"""
+    async def _ensure_capacity(self) -> bool:
+        """补齐匿名会话池容量。返回 True 表示补齐成功或无需补齐，False 表示补齐失败（未建出任何会话）。"""
         async with self._capacity_lock:
             while True:
                 valid_sessions = self._list_valid_sessions()
                 need = self.pool_size - len(valid_sessions)
                 if need <= 0:
-                    return
+                    return True
 
                 results = await asyncio.gather(
                     *[self._create_session() for _ in range(need)],
@@ -218,6 +220,7 @@ class GuestSessionPool:
                 )
 
                 created = 0
+                errors = set()
                 with self._lock:
                     for result in results:
                         if isinstance(result, GuestSession):
@@ -226,16 +229,26 @@ class GuestSessionPool:
                         elif isinstance(result, Exception):
                             exc_type = type(result).__name__
                             exc_msg = str(result) or "(无详情)"
-                            logger.warning(f"⚠️ 匿名会话池补齐失败: [{exc_type}] {exc_msg}")
+                            errors.add(f"[{exc_type}] {exc_msg}")
+
+                if errors:
+                    logger.warning(f"⚠️ 匿名会话池补齐失败 (成功 {created}/{need}): {', '.join(errors)}")
 
                 if created == 0:
-                    return
+                    return False
 
     async def _maintenance_loop(self):
         """后台维护：回收过期/失效会话，并补齐池容量。"""
+        consecutive_failures = 0
+
         while True:
             try:
-                await asyncio.sleep(self.maintenance_interval)
+                if consecutive_failures > 0:
+                    sleep_time = self.maintenance_interval * (2 ** (consecutive_failures - 1))
+                else:
+                    sleep_time = self.maintenance_interval
+
+                await asyncio.sleep(sleep_time)
                 stale_sessions: List[GuestSession] = []
 
                 with self._lock:
@@ -249,11 +262,28 @@ class GuestSessionPool:
 
                 await self._delete_sessions_concurrently(stale_sessions)
 
-                await self._ensure_capacity()
+                success = await self._ensure_capacity()
+                if success is False:
+                    consecutive_failures += 1
+                    if consecutive_failures >= self.max_failures:
+                        logger.error(f"❌ 匿名会话池补齐连续失败 {consecutive_failures} 次达到限值，停止后台维护")
+                        break
+                    else:
+                        next_sleep = self.maintenance_interval * (2 ** (consecutive_failures - 1))
+                        logger.warning(f"⚠️ 匿名会话池补齐连续失败 {consecutive_failures} 次, 下次重试将等待 {next_sleep} 秒")
+                else:
+                    if consecutive_failures > 0:
+                        logger.info("✔️ 匿名会话池补齐恢复正常")
+                        consecutive_failures = 0
+
             except asyncio.CancelledError:
                 return
             except Exception as exc:
                 logger.warning(f"⚠️ 匿名会话池后台维护异常: {exc}")
+                consecutive_failures += 1
+                if consecutive_failures >= self.max_failures:
+                    logger.error(f"❌ 匿名会话池后台维护异常连续 {consecutive_failures} 次达到限值，停止后台维护")
+                    break
 
     async def initialize(self):
         """初始化匿名会话池。"""
@@ -266,6 +296,7 @@ class GuestSessionPool:
         )
 
         created = 0
+        errors = set()
         with self._lock:
             for result in results:
                 if isinstance(result, GuestSession):
@@ -274,7 +305,10 @@ class GuestSessionPool:
                 elif isinstance(result, Exception):
                     exc_type = type(result).__name__
                     exc_msg = str(result) or "(无详情)"
-                    logger.warning(f"⚠️ 匿名会话池初始化失败: [{exc_type}] {exc_msg}")
+                    errors.add(f"[{exc_type}] {exc_msg}")
+
+        if errors:
+            logger.warning(f"⚠️ 匿名会话池初始化失败 (成功 {created}/{self.pool_size}): {', '.join(errors)}")
 
         if created == 0:
             try:
@@ -419,6 +453,7 @@ async def initialize_guest_session_pool(
     pool_size: int = 3,
     session_max_age: int = 480,
     maintenance_interval: int = 30,
+    max_failures: int = 10,
 ) -> GuestSessionPool:
     """初始化全局匿名会话池。"""
     global _guest_session_pool
@@ -429,6 +464,7 @@ async def initialize_guest_session_pool(
                 pool_size=pool_size,
                 session_max_age=session_max_age,
                 maintenance_interval=maintenance_interval,
+                max_failures=max_failures,
             )
         pool = _guest_session_pool
 
