@@ -53,6 +53,7 @@ async def handle_non_stream_response(stream_response, request: OpenAIRequest) ->
     full_content = []
     reasoning_content = []
     tool_calls_dict = {}
+    usage_info = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     async for chunk_data in stream_response():
         if chunk_data.startswith("data: "):
@@ -60,6 +61,16 @@ async def handle_non_stream_response(stream_response, request: OpenAIRequest) ->
             if chunk_str and chunk_str != "[DONE]":
                 try:
                     chunk = json.loads(chunk_str)
+                    
+                    if "usage" in chunk and chunk["usage"]:
+                        usage = chunk["usage"]
+                        if usage.get("prompt_tokens"):
+                            usage_info["prompt_tokens"] = usage["prompt_tokens"]
+                        if usage.get("completion_tokens"):
+                            usage_info["completion_tokens"] = usage["completion_tokens"]
+                        if usage.get("total_tokens"):
+                            usage_info["total_tokens"] = usage["total_tokens"]
+
                     if "choices" in chunk and chunk["choices"]:
                         choice = chunk["choices"][0]
                         delta = choice.get("delta", {})
@@ -112,7 +123,11 @@ async def handle_non_stream_response(stream_response, request: OpenAIRequest) ->
                 finish_reason="tool_calls" if tool_calls_dict else "stop",
             )
         ],
-        usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        usage=Usage(
+            prompt_tokens=usage_info.get("prompt_tokens", 0),
+            completion_tokens=usage_info.get("completion_tokens", 0),
+            total_tokens=usage_info.get("total_tokens", 0),
+        ),
     )
 
     logger.info("✅ 非流式响应处理完成")
@@ -121,13 +136,19 @@ async def handle_non_stream_response(stream_response, request: OpenAIRequest) ->
 
 @router.get("/v1/models")
 async def list_models():
-    """返回当前服务支持的模型列表。"""
+    """返回当前服务支持的模型列表（含能力声明）。"""
     try:
         client = get_upstream_client()
         current_time = int(time.time())
+        model_manager = client._model_manager
         response = ModelsResponse(
             data=[
-                Model(id=model_id, created=current_time, owned_by=settings.SERVICE_NAME)
+                Model(
+                    id=model_id,
+                    created=current_time,
+                    owned_by=settings.SERVICE_NAME,
+                    capabilities=model_manager.get_model_capabilities(model_id),
+                )
                 for model_id in client.get_supported_models()
             ]
         )
@@ -151,11 +172,13 @@ async def chat_completions(
     )
     source_prefix = format_request_source(source_info)
     started_at = time.perf_counter()
+    body.started_at = started_at
 
     role = body.messages[0].role if body.messages else "unknown"
     logger.info(
-        f"{source_prefix} 😶‍🌫️ 收到客户端请求 - 模型: {body.model}, 流式: {body.stream}, 消息数: {len(body.messages)}, 角色: {role}, 工具数: {len(body.tools) if body.tools else 0}"
+        f"{source_prefix} 收到客户端请求 - 模型: {body.model}, 流式: {body.stream}, 消息数: {len(body.messages)}, 角色: {role}, 工具数: {len(body.tools) if body.tools else 0}"
     )
+    logger.debug(f"{source_prefix} 客户端请求原样数据: {body}")
 
     try:
         if not settings.SKIP_AUTH_TOKEN:

@@ -33,6 +33,7 @@ class ModelManager:
             settings.GLM46V_MODEL: "glm-4.6v",               # GLM-4.6V
             settings.GLM46V_ADVANCED_SEARCH_MODEL: "glm-4.6v",  # GLM-4.6V-advanced-search
             settings.GLM5_MODEL: "glm-5",                    # GLM-5
+            settings.GLM5_THINKING_MODEL: "glm-5",           # GLM-5-Thinking
             settings.GLM5_AGENT_MODEL: "glm-5",              # GLM-5-Agent
             settings.GLM5_ADVANCED_SEARCH_MODEL: "glm-5",   # GLM-5-advanced-search
             settings.GLM47_MODEL: "glm-4.7",                 # GLM-4.7
@@ -59,15 +60,122 @@ class ModelManager:
             },
             settings.GLM5_ADVANCED_SEARCH_MODEL: {
                 "enable_thinking": True,
+                "web_search": True,
                 "auto_web_search": True,
             },
             settings.GLM46V_ADVANCED_SEARCH_MODEL: {
                 "enable_thinking": True,
+                "web_search": True,
                 "auto_web_search": True,
             },
             settings.GLM47_ADVANCED_SEARCH_MODEL: {
                 "enable_thinking": True,
+                "web_search": True,
                 "auto_web_search": True,
+            },
+            settings.GLM45_SEARCH_MODEL: {
+                "web_search": True,
+                "auto_web_search": True,
+            },
+            settings.GLM47_SEARCH_MODEL: {
+                "web_search": True,
+                "auto_web_search": True,
+            },
+        }
+
+        # 模型能力声明 — 让客户端（Cursor / Continue / Cherry Studio 等）
+        # 通过 /v1/models 响应识别模型支持的特性
+        # 能力键说明:
+        #   tool_use     — 支持 function calling / tool_calls
+        #   vision       — 支持图像输入（多模态）
+        #   web_search   — 支持联网搜索
+        #   thinking     — 支持思维链 / 推理过程输出
+        #   agent        — 支持 Agent 模式
+        self.model_capabilities: Dict[str, Dict[str, bool]] = {
+            settings.GLM45_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": False,
+                "thinking": False,
+            },
+            settings.GLM45_THINKING_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": False,
+                "thinking": True,
+            },
+            settings.GLM45_SEARCH_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": True,
+                "thinking": False,
+            },
+            settings.GLM45_AIR_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": False,
+                "thinking": False,
+            },
+            settings.GLM46V_MODEL: {
+                "tool_use": True,
+                "vision": True,
+                "web_search": False,
+                "thinking": False,
+            },
+            settings.GLM46V_ADVANCED_SEARCH_MODEL: {
+                "tool_use": True,
+                "vision": True,
+                "web_search": True,
+                "thinking": True,
+            },
+            settings.GLM5_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": False,
+                "thinking": False,
+            },
+            settings.GLM5_THINKING_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": False,
+                "thinking": True,
+            },
+            settings.GLM5_AGENT_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": False,
+                "thinking": True,
+                "agent": True,
+            },
+            settings.GLM5_ADVANCED_SEARCH_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": True,
+                "thinking": True,
+            },
+            settings.GLM47_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": False,
+                "thinking": False,
+            },
+            settings.GLM47_THINKING_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": False,
+                "thinking": True,
+            },
+            settings.GLM47_SEARCH_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": True,
+                "thinking": False,
+            },
+            settings.GLM47_ADVANCED_SEARCH_MODEL: {
+                "tool_use": True,
+                "vision": False,
+                "web_search": True,
+                "thinking": True,
             },
         }
 
@@ -104,6 +212,23 @@ class ModelManager:
         """
         return self.model_scene_defaults.get(model_name, {})
 
+    def get_model_capabilities(self, model_name: str) -> Dict[str, bool]:
+        """获取模型的能力声明。
+
+        Args:
+            model_name: 外部模型名称。
+
+        Returns:
+            能力字典，例如 {"tool_use": True, "vision": True, ...}。
+            未注册的模型返回基础能力集。
+        """
+        return self.model_capabilities.get(model_name, {
+            "tool_use": True,
+            "vision": False,
+            "web_search": False,
+            "thinking": False,
+        })
+
     def get_supported_models(self) -> List[str]:
         """获取对外暴露的支持模型列表。
 
@@ -118,6 +243,7 @@ class ModelManager:
             settings.GLM46V_MODEL,
             settings.GLM46V_ADVANCED_SEARCH_MODEL,
             settings.GLM5_MODEL,
+            settings.GLM5_THINKING_MODEL,
             settings.GLM5_AGENT_MODEL,
             settings.GLM5_ADVANCED_SEARCH_MODEL,
             settings.GLM47_MODEL,
@@ -155,15 +281,13 @@ class ModelManager:
         if enable_thinking is None:
             enable_thinking = scene_defaults.get("enable_thinking", is_thinking_model)
 
-        # web_search: 仅 -Search 后缀模型开启
+        # web_search: 客户端 > 场景默认 > 模型后缀推断 (默认已包含在 is_search_model 中，非搜索模型即为 False)
         web_search = request.web_search
         if web_search is None:
-            web_search = is_search_model
+            web_search = scene_defaults.get("web_search", is_search_model)
 
-        # auto_web_search: 客户端透传无此字段，用场景默认或通用默认
-        auto_web_search = scene_defaults.get(
-            "auto_web_search", True if not web_search else web_search
-        )
+        # auto_web_search: 场景默认 > False
+        auto_web_search = scene_defaults.get("auto_web_search", False)
 
         # 获取上游模型 ID
         upstream_model_id = self.get_upstream_model_id(requested_model)

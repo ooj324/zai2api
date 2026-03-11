@@ -289,10 +289,17 @@ async def wrap_claude_stream_with_logging(
 
     try:
         async for chunk in stream:
-            if chunk.startswith("event: "):
-                current_event = chunk[7:].strip()
-            elif chunk.startswith("data: "):
-                payload_text = chunk[6:].strip()
+            # chunk might contain multiple lines (e.g. "event: ...\ndata: ...\n\n")
+            lines = chunk.strip().split("\n")
+            payload_text = None
+            
+            for line in lines:
+                if line.startswith("event: "):
+                    current_event = line[7:].strip()
+                elif line.startswith("data: "):
+                    payload_text = line[6:].strip()
+
+            if payload_text:
                 try:
                     payload = json.loads(payload_text)
                 except json.JSONDecodeError:

@@ -68,35 +68,10 @@ class GuestSessionPool:
         self._lock = Lock()
         self._sessions: Dict[str, GuestSession] = {}
         self._maintenance_task: Optional[asyncio.Task] = None
-        self._http_client: Optional[httpx.AsyncClient] = None
-        self._client_lock = asyncio.Lock()
         self._capacity_lock = asyncio.Lock()
         self._background_tasks: Set[asyncio.Task] = set()
         self._cleanup_parallelism = max(1, settings.GUEST_CLEANUP_PARALLELISM)
 
-    async def _get_http_client(self) -> httpx.AsyncClient:
-        """获取可复用的 HTTP 客户端，减少频繁建连开销。"""
-        if self._http_client is not None:
-            return self._http_client
-
-        async with self._client_lock:
-            if self._http_client is None:
-                self._http_client = httpx.AsyncClient(
-                    timeout=_build_timeout(),
-                    follow_redirects=True,
-                    limits=_build_limits(),
-                    proxy=_get_proxy_config(),
-                )
-        return self._http_client
-
-    async def _close_http_client(self):
-        """关闭可复用的 HTTP 客户端。"""
-        async with self._client_lock:
-            client = self._http_client
-            self._http_client = None
-
-        if client is not None:
-            await client.aclose()
 
     def _track_background_task(self, coro) -> asyncio.Task:
         """跟踪后台任务，避免清理阻塞前台重试路径。"""
@@ -141,8 +116,13 @@ class GuestSessionPool:
         """创建一个新的匿名访客会话。"""
         fe_version = await get_latest_fe_version()
         headers = _build_dynamic_headers(fe_version)
-        client = await self._get_http_client()
-        response = await client.get(AUTH_URL, headers=headers)
+        async with httpx.AsyncClient(
+            timeout=_build_timeout(),
+            follow_redirects=True,
+            limits=_build_limits(),
+            proxy=_get_proxy_config(),
+        ) as client:
+            response = await client.get(AUTH_URL, headers=headers)
 
         if response.status_code != 200:
             raise RuntimeError(
@@ -187,8 +167,13 @@ class GuestSessionPool:
         )
 
         try:
-            client = await self._get_http_client()
-            response = await client.delete(CHATS_URL, headers=headers)
+            async with httpx.AsyncClient(
+                timeout=_build_timeout(),
+                follow_redirects=True,
+                limits=_build_limits(),
+                proxy=_get_proxy_config(),
+            ) as client:
+                response = await client.delete(CHATS_URL, headers=headers)
 
             if response.status_code == 200:
                 logger.debug(f"🧹 已清理匿名会话聊天记录: {session.user_id}")
@@ -239,7 +224,9 @@ class GuestSessionPool:
                             self._sessions[result.user_id] = result
                             created += 1
                         elif isinstance(result, Exception):
-                            logger.warning(f"⚠️ 匿名会话池补齐失败: {result}")
+                            exc_type = type(result).__name__
+                            exc_msg = str(result) or "(无详情)"
+                            logger.warning(f"⚠️ 匿名会话池补齐失败: [{exc_type}] {exc_msg}")
 
                 if created == 0:
                     return
@@ -285,7 +272,9 @@ class GuestSessionPool:
                     self._sessions[result.user_id] = result
                     created += 1
                 elif isinstance(result, Exception):
-                    logger.warning(f"⚠️ 匿名会话池初始化失败: {result}")
+                    exc_type = type(result).__name__
+                    exc_msg = str(result) or "(无详情)"
+                    logger.warning(f"⚠️ 匿名会话池初始化失败: [{exc_type}] {exc_msg}")
 
         if created == 0:
             try:
@@ -324,8 +313,6 @@ class GuestSessionPool:
             logger.warning("⚠️ 清理匿名会话记录超时，强制关闭")
         except Exception as e:
             logger.warning(f"⚠️ 清理匿名会话记录异常: {e}")
-            
-        await self._close_http_client()
 
     async def acquire(
         self,

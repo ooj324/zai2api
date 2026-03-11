@@ -453,6 +453,7 @@ async def claude_messages(
 
     try:
         openai_request = _build_openai_request(body)
+        openai_request.started_at = started_at
     except Exception as exc:
         await write_request_log(
             provider="zai",
@@ -485,8 +486,9 @@ async def claude_messages(
             "invalid_request_error",
         )
     logger.info(
-        f"{source_prefix} 🤖 收到 Claude 请求 - 模型: {body.get('model')}, 映射模型: {openai_request.model}, 流式: {openai_request.stream}, 消息数: {len(openai_request.messages)}, 工具数: {len(openai_request.tools) if openai_request.tools else 0}"
+        f"{source_prefix} 收到 Claude 请求 - 模型: {body.get('model')}, 映射模型: {openai_request.model}, 流式: {openai_request.stream}, 消息数: {len(openai_request.messages)}, 工具数: {len(openai_request.tools) if openai_request.tools else 0}"
     )
+    logger.debug(f"{source_prefix} 客户端请求原样数据: {body}")
 
     msg_id = make_claude_id()
     input_tokens = _estimate_tokens(_build_prompt_text(body))

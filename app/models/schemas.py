@@ -46,7 +46,7 @@ class OpenAIRequest(BaseModel):
     mcp_servers: Optional[List[str]] = None
     extra: Optional[Dict[str, Any]] = None
     flags: Optional[List[str]] = None
-
+    started_at: Optional[float] = None
 
 class ModelItem(BaseModel):
     """Model information item"""

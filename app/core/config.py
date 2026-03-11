@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     GLM46V_MODEL: str = os.getenv("GLM46V_MODEL", "GLM-4.6V")
     GLM46V_ADVANCED_SEARCH_MODEL: str = os.getenv("GLM46V_ADVANCED_SEARCH_MODEL", "GLM-4.6V-advanced-search")
     GLM5_MODEL: str = os.getenv("GLM5_MODEL", "GLM-5")
+    GLM5_THINKING_MODEL: str = os.getenv("GLM5_THINKING_MODEL", "GLM-5-Thinking")
     GLM5_AGENT_MODEL: str = os.getenv("GLM5_AGENT_MODEL", "GLM-5-Agent")
     GLM5_ADVANCED_SEARCH_MODEL: str = os.getenv("GLM5_ADVANCED_SEARCH_MODEL", "GLM-5-advanced-search")
     GLM47_MODEL: str = os.getenv("GLM47_MODEL", "GLM-4.7")

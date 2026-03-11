@@ -4,12 +4,12 @@
 """OpenAI 消息预处理 + JWT 工具函数。
 
 将原 upstream.py 中的消息规范化函数和 JWT 解析工具提取为独立模块。
-所有函数签名和行为与原实现完全一致。
+支持 Toolify XML 格式的工具调用历史还原。
 """
 
 import base64
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -136,16 +136,28 @@ def _format_tool_result_message(
 ) -> str:
     """Serialize a tool result into a text block the upstream can consume."""
     return (
-        "<tool_execution_result>\n"
-        f"<tool_name>{tool_name}</tool_name>\n"
-        f"<tool_arguments>{tool_arguments}</tool_arguments>\n"
-        f"<tool_output>{result_content}</tool_output>\n"
-        "</tool_execution_result>"
+        "Tool execution result:\n"
+        f"- Tool name: {tool_name}\n"
+        f"- Tool arguments: {tool_arguments}\n"
+        f"- Execution result:\n"
+        f"<tool_result>\n"
+        f"{result_content}\n"
+        f"</tool_result>"
     )
 
 
-def _format_assistant_tool_calls(tool_calls: List[Dict[str, Any]]) -> str:
-    """Serialize historical assistant tool calls into a text block."""
+def _format_assistant_tool_calls(
+    tool_calls: List[Dict[str, Any]],
+    trigger_signal: str = "",
+) -> str:
+    """Serialize historical assistant tool calls into Toolify XML format.
+
+    Args:
+        tool_calls: list of tool call dicts with 'function' sub-dict.
+        trigger_signal: XML trigger signal, e.g. '<Function_AB1c_Start/>'.
+            When provided, the output will start with the trigger signal
+            so upstream LLM can correctly recognize this as a past tool call.
+    """
     blocks: List[str] = []
 
     for tool_call in tool_calls:
@@ -162,17 +174,20 @@ def _format_assistant_tool_calls(tool_calls: List[Dict[str, Any]]) -> str:
             continue
 
         arguments = _stringify_tool_arguments(function_data.get("arguments"))
+        # Wrap arguments in CDATA to avoid XML escaping issues
+        safe_args = (arguments or "").replace("]]>", "]]]]><![CDATA[>")
         blocks.append(
             "<function_call>\n"
-            f"<name>{name}</name>\n"
-            f"<args_json>{arguments}</args_json>\n"
+            f"<tool>{name}</tool>\n"
+            f"<args_json><![CDATA[{safe_args}]]></args_json>\n"
             "</function_call>"
         )
 
     if not blocks:
         return ""
 
-    return "<function_calls>\n" + "\n".join(blocks) + "\n</function_calls>"
+    prefix = f"{trigger_signal}\n" if trigger_signal else ""
+    return prefix + "<function_calls>\n" + "\n".join(blocks) + "\n</function_calls>"
 
 
 # ---------------------------------------------------------------------------
@@ -182,16 +197,18 @@ def _format_assistant_tool_calls(tool_calls: List[Dict[str, Any]]) -> str:
 
 def preprocess_openai_messages(
     messages: List[Dict[str, Any]],
+    trigger_signal: str = "",
 ) -> List[Dict[str, Any]]:
     """Normalize OpenAI history into shapes accepted by the upstream service.
 
     处理以下转换：
     - ``developer`` 角色 → ``system``
-    - ``tool`` 角色 → ``user``（将工具结果序列化为 XML 文本块）
-    - 带有 ``tool_calls`` 的 ``assistant`` → 合并内容与工具调用序列化
+    - ``tool`` 角色 → ``user``（将工具结果序列化为文本块）
+    - 带有 ``tool_calls`` 的 ``assistant`` → 合并内容与工具调用 XML 序列化
 
     Args:
         messages: OpenAI 格式的消息列表（已 model_dump）。
+        trigger_signal: Toolify XML 触发信号(可选)。
 
     Returns:
         上游服务可接受的消息列表。
@@ -235,7 +252,10 @@ def preprocess_openai_messages(
 
         if role == "assistant" and isinstance(message.get("tool_calls"), list):
             content = _extract_text_from_content(message.get("content"))
-            tool_calls_text = _format_assistant_tool_calls(message["tool_calls"])
+            tool_calls_text = _format_assistant_tool_calls(
+                message["tool_calls"],
+                trigger_signal=trigger_signal,
+            )
             merged_content = "\n".join(
                 part for part in (content, tool_calls_text) if part
             ).strip()

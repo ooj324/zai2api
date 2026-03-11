@@ -168,14 +168,13 @@ def build_upstream_body(
     flags: List[str],
     extra: Dict[str, Any],
     mcp_servers: List[str],
-    tools: Optional[Any],
-    tool_choice: Optional[Any],
     temperature: Optional[float],
     max_tokens: Optional[int],
 ) -> Dict[str, Any]:
     """构建发送到上游的请求 JSON body。
 
-    保留所有原始字段，不做任何裁剪。
+    采用 Toolify XML 方案后，工具定义通过 system prompt 注入，
+    不再通过 body 透传 tools/tool_choice 字段。
 
     Args:
         messages: 上游格式消息列表。
@@ -190,8 +189,6 @@ def build_upstream_body(
         flags: 功能标志列表（如 ["general_agent"]）。
         extra: 额外参数字典。
         mcp_servers: MCP 服务器 ID 列表。
-        tools: OpenAI 工具定义列表，None 表示不使用。
-        tool_choice: 工具选择策略。
         temperature: 采样温度，None 时不添加到 params。
         max_tokens: 最大 token 数，None 时不添加到 params。
 
@@ -241,10 +238,9 @@ def build_upstream_body(
     if mcp_servers:
         body["mcp_servers"] = mcp_servers
 
-    if tools:
-        body["tools"] = tools
-        if tool_choice is not None:
-            body["tool_choice"] = tool_choice
+    # NOTE: tools/tool_choice 不再透传到 body。
+    # Toolify XML 方案通过 system prompt 注入工具定义，
+    # 避免与上游原生工具处理冲突。
 
     # 处理其他参数
     if temperature is not None:

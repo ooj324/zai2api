@@ -50,6 +50,10 @@ from app.core.openai_compat import (
     format_sse_chunk,
     handle_error,
 )
+from app.utils.tool_call_handler import (
+    generate_trigger_signal,
+    process_messages_with_tools,
+)
 from app.models.schemas import OpenAIRequest
 from app.utils.fe_version import get_latest_fe_version
 from app.utils.logger import get_logger
@@ -406,7 +410,7 @@ class UpstreamClient:
 
                 self._online_models = parsed_models
                 self._online_models_time = now
-                self.logger.info(
+                self.logger.debug(
                     f"✅ 在线模型同步成功，共获取 {len(parsed_models)} 个模型"
                 )
                 return parsed_models
@@ -454,7 +458,7 @@ class UpstreamClient:
                             or str(data.get("email") or "").split("@")[0]
                             or "Guest"
                         )
-                        self.logger.info(
+                        self.logger.debug(
                             f"✅ 直连获取匿名令牌成功: {token[:20]}..."
                         )
                         return {
@@ -534,7 +538,7 @@ class UpstreamClient:
                     session = await guest_pool.acquire(
                         exclude_user_ids=excluded_guest_user_ids
                     )
-                    self.logger.info(
+                    self.logger.debug(
                         "🫥 认证池不可用，回退匿名会话池: "
                         f"user_id={session.user_id}"
                     )
@@ -615,12 +619,36 @@ class UpstreamClient:
         excluded_guest_user_ids: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         """转换 OpenAI 请求为上游格式。"""
-        self.logger.info(f"🔄 转换 OpenAI 请求到上游格式: {request.model}")
+        self.logger.debug(f"🔄 转换 OpenAI 请求到上游格式: {request.model}")
 
         raw_messages = [
             message.model_dump(exclude_none=True) for message in request.messages
         ]
-        normalized_messages = preprocess_openai_messages(raw_messages)
+
+        # NOTE: chat.z.ai 对 OpenAI-style `tools` 的原生支持并不稳定。
+        # 采用 Toolify XML 方案：生成随机触发信号，将工具定义注入 system prompt，
+        # 模型会输出 XML 格式的工具调用，由响应处理器实时检测并转换为 OpenAI tool_calls。
+        tools = request.tools if settings.TOOL_SUPPORT and request.tools else None
+        tool_choice = getattr(request, "tool_choice", None)
+
+        # 生成 Toolify XML 触发信号（每次请求唯一）
+        trigger_signal = generate_trigger_signal() if tools else ""
+        if trigger_signal:
+            self.logger.debug(f"🔧 生成 XML 触发信号: {trigger_signal}")
+
+        # 预处理消息（传入 trigger_signal 以便历史工具调用使用正确格式）
+        normalized_messages = preprocess_openai_messages(
+            raw_messages,
+            trigger_signal=trigger_signal,
+        )
+
+        # 注入 XML 工具提示词到 system prompt
+        normalized_messages = process_messages_with_tools(
+            normalized_messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            trigger_signal=trigger_signal,
+        )
 
         auth_info = await self.get_auth_info(
             excluded_tokens=excluded_tokens,
@@ -656,15 +684,19 @@ class UpstreamClient:
 
         # 解析模型特性
         features = self._model_manager.resolve_model_features(request)
+        self.logger.debug(
+            f"Resolved model features for {request.model}: {features}, "
+            f"temperature={request.temperature}, max_tokens={request.max_tokens}"
+        )
 
         message_id = generate_uuid()
-        tools = request.tools if settings.TOOL_SUPPORT and request.tools else None
-        tool_choice = getattr(request, "tool_choice", None)
-
         if tools:
-            self.logger.info(f"🔧 工具调用将直接透传到上游: {len(tools)} 个工具")
+            self.logger.info(
+                f"工具定义: {len(tools)} 个工具；"
+                "XML 提示已注入，tools/tool_choice 不透传到上游 body"
+            )
 
-        # 构建请求体
+        # 构建请求体（Toolify 方案：不透传 tools/tool_choice）
         body = build_upstream_body(
             messages=messages,
             files=files,
@@ -678,11 +710,10 @@ class UpstreamClient:
             flags=features["flags"],
             extra=features["extra"],
             mcp_servers=features["mcp_servers"],
-            tools=tools,
-            tool_choice=tool_choice,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
         )
+        self.logger.debug(f"Upstream request body: {body}")
 
         # 签名并生成最终 URL 和 headers
         signed_url, headers, _fe_version = await sign_request(
@@ -707,6 +738,8 @@ class UpstreamClient:
             "auth_mode": auth_mode,
             "token_source": token_source,
             "guest_user_id": guest_user_id,
+            "trigger_signal": trigger_signal,
+            "tools": tools,
         }
 
     # ------------------------------------------------------------------
@@ -719,7 +752,7 @@ class UpstreamClient:
         **kwargs
     ) -> Union[Dict[str, Any], AsyncGenerator[str, None]]:
         """聊天完成接口。"""
-        self.logger.info(f"🔄 {self.name} 处理请求: {request.model}")
+        self.logger.debug(f"🔄 {self.name} 处理请求: {request.model}")
         self.logger.debug(f"  消息数量: {len(request.messages)}")
         self.logger.debug(f"  流式模式: {request.stream}")
 
@@ -846,7 +879,7 @@ class UpstreamClient:
         try:
             client = self._get_shared_stream_client()
             for attempt in range(max_attempts):
-                self.logger.info(f"🎯 发送请求到上游: {transformed['url']}")
+                self.logger.debug(f"🎯 发送请求到上游: {transformed['url']}")
                 async with client.stream(
                     "POST",
                     transformed["url"],
@@ -1021,7 +1054,9 @@ class UpstreamClient:
             )
         else:
             return await self._response_handler.handle_non_stream_response(
-                response, chat_id, model
+                response, chat_id, model,
+                trigger_signal=transformed.get("trigger_signal", ""),
+                tools_defs=transformed.get("tools"),
             )
 
     async def _handle_stream_response(
@@ -1043,8 +1078,13 @@ class UpstreamClient:
         response: httpx.Response,
         chat_id: str,
         model: str,
+        transformed: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """处理非流式响应（委托到 ResponseHandler）。"""
+        trigger_signal = (transformed or {}).get("trigger_signal", "")
+        tools_defs = (transformed or {}).get("tools")
         return await self._response_handler.handle_non_stream_response(
-            response, chat_id, model
+            response, chat_id, model,
+            trigger_signal=trigger_signal,
+            tools_defs=tools_defs,
         )

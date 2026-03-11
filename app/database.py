@@ -1,13 +1,51 @@
 import os
+import ssl as _stdlib_ssl
 from typing import AsyncGenerator
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
 
-def get_db_url(db_url: str = None) -> str:
-    """获取数据库连接 URL"""
+
+def _parse_sslmode(url: str) -> tuple[str, dict]:
+    """Strip `sslmode` from a PostgreSQL URL and return (cleaned_url, connect_args).
+
+    asyncpg does not accept `sslmode` as a query-string parameter (that is a
+    libpq / psycopg2 convention).  We translate it into asyncpg's `ssl`
+    connect-arg instead.
+    """
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    sslmode = qs.pop("sslmode", [None])[0]
+
+    # Rebuild the URL without sslmode
+    new_query = urlencode({k: v[0] for k, v in qs.items()})
+    cleaned_url = urlunparse(parsed._replace(query=new_query))
+
+    connect_args: dict = {}
+    if sslmode:
+        if sslmode == "disable":
+            connect_args["ssl"] = False
+        elif sslmode in ("require", "prefer"):
+            # asyncpg accepts an ssl.SSLContext or the string "require" (>= 0.29)
+            # Use a permissive SSLContext that skips certificate verification,
+            # which matches the behavior of libpq's `sslmode=require`.
+            ctx = _stdlib_ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = _stdlib_ssl.CERT_NONE
+            connect_args["ssl"] = ctx
+        elif sslmode in ("verify-ca", "verify-full"):
+            connect_args["ssl"] = True  # uses default SSL context with verification
+
+    return cleaned_url, connect_args
+
+
+def get_db_url(db_url: str = None) -> tuple[str, dict]:
+    """获取数据库连接 URL 和 connect_args"""
     url = db_url or settings.DATABASE_URL
+    connect_args: dict = {}
+
     if url:
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -17,16 +55,23 @@ def get_db_url(db_url: str = None) -> str:
         elif url.startswith("sqlite"):
             if not url.startswith("sqlite+aiosqlite"):
                 url = url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-        return url
+
+        # Strip sslmode for asyncpg compatibility
+        if "asyncpg" in url:
+            url, connect_args = _parse_sslmode(url)
+
+        return url, connect_args
     
     # 默认使用 SQLite
     db_path = settings.DB_PATH
     if not os.path.isabs(db_path):
         db_path = os.path.abspath(db_path)
-    return f"sqlite+aiosqlite:///{db_path}"
+    return f"sqlite+aiosqlite:///{db_path}", {}
+
 
 # 全局引擎和会话工厂
-engine = create_async_engine(get_db_url(), echo=False)
+_db_url, _connect_args = get_db_url()
+engine = create_async_engine(_db_url, echo=False, connect_args=_connect_args)
 async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 async def init_db():

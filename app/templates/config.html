@@ -76,29 +76,25 @@
 
 {% block content %}
 <div class="w-full space-y-6">
-    <!-- Header Area -->
-    <div class="relative overflow-hidden rounded-3xl bg-indigo-900 border border-indigo-800 shadow-xl">
-        <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-20">
+    <!-- 页面标题 -->
+    <div class="flex items-center justify-between">
+        <div>
+            <h2 class="text-3xl font-bold text-gray-900">配置中心</h2>
+            <p class="mt-1 text-sm text-gray-600">
+                调整应用程序行为、认证密钥和上游模型映射。配置修改即刻保存并热更新；底层环境字段自动存入 <code
+                    class="bg-gray-100 px-1 rounded text-gray-800">.env</code> 中。
+            </p>
         </div>
-        <div class="relative px-8 py-10 z-10 flex flex-col md:flex-row md:items-end md:justify-between">
-            <div>
-                <h1 class="text-3xl font-extrabold text-white tracking-tight">配置中心</h1>
-                <p class="mt-2 text-indigo-200 max-w-xl text-sm leading-relaxed">
-                    调整应用程序行为、认证密钥和上游模型映射。配置修改即刻保存并热更新；底层环境字段自动存入 <code class="bg-indigo-800 px-1 rounded">.env</code> 中。
-                </p>
-            </div>
-            <div class="mt-4 md:mt-0">
-                <button type="button" hx-post="/admin/api/config/save" hx-include="#main-config-form"
-                    hx-target="#config-feedback" hx-swap="innerHTML"
-                    class="inline-flex items-center px-6 py-2.5 bg-white text-indigo-900 font-bold rounded-xl shadow-[0_0_15px_rgba(255,255,255,0.3)] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] transform hover:-translate-y-0.5 transition-all">
-                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4">
-                        </path>
-                    </svg>
-                    保存我的配置
-                </button>
-            </div>
+        <div class="flex flex-wrap gap-3">
+            <button type="button" hx-post="/admin/api/config/save" hx-include="#main-config-form"
+                hx-target="#config-feedback" hx-swap="innerHTML"
+                class="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center">
+                <svg class="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                </svg>
+                保存我的配置
+            </button>
         </div>
     </div>
 
