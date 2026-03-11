@@ -8,18 +8,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import settings
 
 
-def _parse_sslmode(url: str) -> tuple[str, dict]:
-    """Strip `sslmode` from a PostgreSQL URL and return (cleaned_url, connect_args).
+def _clean_db_url(url: str) -> tuple[str, dict]:
+    """Strip unsupported parameters from a PostgreSQL URL and return (cleaned_url, connect_args).
 
-    asyncpg does not accept `sslmode` as a query-string parameter (that is a
-    libpq / psycopg2 convention).  We translate it into asyncpg's `ssl`
-    connect-arg instead.
+    - asyncpg does not accept `sslmode` as a query-string parameter (that is a
+      libpq / psycopg2 convention). We translate it into asyncpg's `ssl`
+      connect-arg instead.
+    - asyncpg does not accept `channel_binding`. We strip it.
     """
     parsed = urlparse(url)
     qs = parse_qs(parsed.query)
     sslmode = qs.pop("sslmode", [None])[0]
+    # Remove channel_binding to prevent TypeError in asyncpg connect()
+    qs.pop("channel_binding", None)
 
-    # Rebuild the URL without sslmode
+    # Rebuild the URL without the stripped parameters
     new_query = urlencode({k: v[0] for k, v in qs.items()})
     cleaned_url = urlunparse(parsed._replace(query=new_query))
 
@@ -56,9 +59,9 @@ def get_db_url(db_url: str = None) -> tuple[str, dict]:
             if not url.startswith("sqlite+aiosqlite"):
                 url = url.replace("sqlite://", "sqlite+aiosqlite://", 1)
 
-        # Strip sslmode for asyncpg compatibility
+        # Strip unsupported parameters for asyncpg compatibility
         if "asyncpg" in url:
-            url, connect_args = _parse_sslmode(url)
+            url, connect_args = _clean_db_url(url)
 
         return url, connect_args
     
