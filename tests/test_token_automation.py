@@ -49,3 +49,5 @@ async def test_run_token_maintenance_deletes_invalid_tokens_after_validation(
     remaining_tokens = await dao.get_tokens_by_provider("zai", enabled_only=False)
     assert [token["token"] for token in remaining_tokens] == ["token-valid"]
     assert remaining_tokens[0]["token_type"] == "user"
+
+    await dao.close()

@@ -99,5 +99,7 @@ async def test_run_chat_cleanup(tmp_path, monkeypatch, mock_httpx_client, mock_f
     
     assert t1["last_chat_cleanup"] is not None
     assert t3["last_chat_cleanup"] is not None
+
+    await dao.close()
     
     # t2 的清理时间不应该等于当前的清理批次（这里简单起见只需确认 t1 和 t3 更新了）

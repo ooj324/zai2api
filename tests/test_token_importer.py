@@ -68,3 +68,5 @@ async def test_import_tokens_from_directory_handles_duplicates_and_invalid_files
     tokens = await dao.get_tokens_by_provider("zai", enabled_only=False)
     imported_values = {item["token"] for item in tokens}
     assert imported_values == {"token-alpha", "token-beta"}
+
+    await dao.close()

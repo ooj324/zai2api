@@ -2,7 +2,7 @@ import asyncio
 import sys
 import os
 sys.path.insert(0, os.path.abspath("."))
-from app.database import async_session, init_db
+from app.database import async_session, init_db, close_db
 from app.models.db_models import RequestLog
 from sqlalchemy import select
 
@@ -16,5 +16,6 @@ async def main():
             print(dict(row._mapping))
         else:
             print("No rows found")
+    await close_db()
 
 asyncio.run(main())

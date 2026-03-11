@@ -165,6 +165,9 @@ async def test_collect_admin_stats_uses_request_logs_and_token_inventory(tmp_pat
     assert stats["usage_trend"][-1]["total_tokens"] == 260
     assert stats["usage_trend"][-1]["cache_total_tokens"] == 35
 
+    await token_dao.close()
+    await request_log_dao.close()
+
 
 @pytest.mark.asyncio
 async def test_get_model_stats_from_db_includes_recent_same_day_logs(tmp_path):
@@ -191,6 +194,8 @@ async def test_get_model_stats_from_db_includes_recent_same_day_logs(tmp_path):
     assert stats["glm-5"]["total"] == 1
     assert stats["glm-5"]["success"] == 1
     assert stats["glm-5"]["failed"] == 0
+
+    await dao.close()
 
 
 @pytest.mark.asyncio
@@ -223,6 +228,8 @@ async def test_request_log_dao_supports_count_and_offset_pagination(tmp_path):
     assert paged_logs[0]["endpoint"] == "/v1/chat/completions/2"
     assert paged_logs[1]["endpoint"] == "/v1/chat/completions/1"
 
+    await dao.close()
+
 
 @pytest.mark.asyncio
 async def test_request_log_dao_returns_usage_trend_with_missing_days_filled(
@@ -253,6 +260,8 @@ async def test_request_log_dao_returns_usage_trend_with_missing_days_filled(
     assert sum(day["total_requests"] for day in trend) == 1
     assert trend[-1]["total_tokens"] == 20
     assert trend[-1]["cache_total_tokens"] == 3
+
+    await dao.close()
 
 
 @pytest.mark.asyncio
@@ -301,6 +310,8 @@ async def test_request_log_dao_returns_hourly_usage_trend_with_missing_hours(
     assert trend[-1]["cache_read_tokens"] == 3
     assert sum(point["total_requests"] for point in trend) == 1
     assert all(point["total_requests"] == 0 for point in trend[:-1])
+
+    await dao.close()
 
 
 @pytest.mark.asyncio
@@ -359,6 +370,8 @@ async def test_dashboard_usage_trend_api_returns_requested_window(
     assert payload["points"][-4]["input_tokens"] == 30
     assert payload["points"][-4]["cache_read_tokens"] == 4
 
+    await dao.close()
+
 
 @pytest.mark.asyncio
 async def test_recent_logs_component_includes_usage_cache_and_latency_fields(
@@ -407,6 +420,8 @@ async def test_recent_logs_component_includes_usage_cache_and_latency_fields(
     assert "1.25s" in body
     assert "0.42s" in body
 
+    await dao.close()
+
 
 @pytest.mark.asyncio
 async def test_recent_logs_component_deduplicates_client_and_source_labels(
@@ -443,6 +458,8 @@ async def test_recent_logs_component_deduplicates_client_and_source_labels(
     assert ">browser<" not in body
     assert ">zai<" not in body
 
+    await dao.close()
+
 
 @pytest.mark.asyncio
 async def test_token_dao_supports_count_and_offset_pagination(tmp_path):
@@ -464,6 +481,8 @@ async def test_token_dao_supports_count_and_offset_pagination(tmp_path):
     assert len(paged_tokens) == 2
     assert paged_tokens[0]["token"] == "token-2"
     assert paged_tokens[1]["token"] == "token-3"
+
+    await dao.close()
 
 
 @pytest.mark.asyncio
@@ -494,6 +513,8 @@ async def test_token_pool_realtime_usage_stats_sync_to_db(tmp_path, monkeypatch)
     assert stats_after_sync["total_requests"] == 2
     assert stats_after_sync["successful_requests"] == 1
     assert stats_after_sync["failed_requests"] == 1
+
+    await dao.close()
 
 
 def test_format_uptime_formats_seconds_minutes_and_hours():
