@@ -138,6 +138,10 @@ class TokenAutomationScheduler:
                 self._auto_maintenance_loop(),
                 name="token-auto-maintenance",
             ),
+            asyncio.create_task(
+                self._auto_chat_cleanup_loop(),
+                name="token-auto-chat-cleanup",
+            ),
         ]
         logger.info("✅ Token 自动任务调度器已启动")
 
@@ -227,6 +231,31 @@ class TokenAutomationScheduler:
             except Exception as exc:
                 logger.exception(f"❌ Token 自动维护失败: {exc}")
 
+            await self._wait_or_stop(wait_seconds)
+
+    async def _auto_chat_cleanup_loop(self) -> None:
+        while not self._stop_event.is_set():
+            wait_seconds = 86400  # 默认一天执行一次
+
+            try:
+                if getattr(settings, "CHAT_CLEANUP_ENABLED", True):
+                    from app.core.chat_cleanup import run_chat_cleanup
+                    interval_days = getattr(settings, "CHAT_CLEANUP_INTERVAL_DAYS", 7)
+                    
+                    summary = await run_chat_cleanup(interval_days=interval_days)
+                    if summary.total_checked > 0:
+                        logger.info(
+                            "🧹 定期会话清理完成: checked={} success={} failed={}",
+                            summary.total_checked,
+                            summary.success_count,
+                            summary.failed_count,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception(f"❌ 定期会话清理失败: {exc}")
+                wait_seconds = 3600  # 执行出错的话，过 1 小时再重试
+            
             await self._wait_or_stop(wait_seconds)
 
     async def _wait_or_stop(self, timeout: int) -> None:

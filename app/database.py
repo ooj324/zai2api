@@ -81,9 +81,34 @@ async def init_db():
     """初始化数据库表"""
     from app.models.db_models import Base
     import app.models.db_models  # 确保模型被注册
+    from sqlalchemy import text
+    from app.utils.logger import logger
     
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+        # 自动迁移检查（仅适用于简单结构升级，如添加缺失字段）
+        try:
+            dialect = conn.dialect.name
+            if dialect == "sqlite":
+                result = await conn.execute(text("PRAGMA table_info(tokens)"))
+                columns = [row[1] for row in result.fetchall()]
+            elif dialect == "postgresql":
+                result = await conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='tokens'"
+                ))
+                columns = [row[0] for row in result.fetchall()]
+            else:
+                columns = []
+
+            # 补充 last_chat_cleanup 列
+            if columns and "last_chat_cleanup" not in columns:
+                logger.info("🔧 自动数据库迁移: tokens 表新增 last_chat_cleanup 列...")
+                await conn.execute(text("ALTER TABLE tokens ADD COLUMN last_chat_cleanup DATETIME"))
+                logger.info("✅ 迁移成功")
+        except Exception as e:
+            logger.error(f"⚠️ 自动检查或增加新列时出错: {e}")
 
 async def close_db():
     """关闭数据库连接"""

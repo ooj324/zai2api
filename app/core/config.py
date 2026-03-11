@@ -42,6 +42,12 @@ class Settings(BaseSettings):
         os.getenv("TOKEN_AUTO_DELETE_INVALID", "false").lower() == "true"
     )
 
+    # Chat Cleanup
+    CHAT_CLEANUP_ENABLED: bool = (
+        os.getenv("CHAT_CLEANUP_ENABLED", "true").lower() == "true"
+    )
+    CHAT_CLEANUP_INTERVAL_DAYS: int = int(os.getenv("CHAT_CLEANUP_INTERVAL_DAYS", "7"))
+
     # Model Configuration
     GLM45_MODEL: str = os.getenv("GLM45_MODEL", "GLM-4.5")
     GLM45_THINKING_MODEL: str = os.getenv("GLM45_THINKING_MODEL", "GLM-4.5-Thinking")

@@ -26,6 +26,7 @@ class Token(Base):
     priority = mapped_column(Integer, default=0, server_default="0", nullable=False)
     is_enabled = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     created_at = mapped_column(DateTime, default=func.now(), server_default=func.now(), nullable=False)
+    last_chat_cleanup = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider", "token", name="uq_provider_token"),

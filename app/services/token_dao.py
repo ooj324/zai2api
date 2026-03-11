@@ -110,6 +110,7 @@ class TokenDAO:
             "failed_requests": getattr(token_item.stats, "failed_requests", 0) if token_item.stats else 0,
             "last_success_time": str(token_item.stats.last_success_time) if token_item.stats and token_item.stats.last_success_time else None,
             "last_failure_time": str(token_item.stats.last_failure_time) if token_item.stats and token_item.stats.last_failure_time else None,
+            "last_chat_cleanup": str(token_item.last_chat_cleanup) if token_item.last_chat_cleanup else None,
         }
         return d
 
@@ -137,6 +138,26 @@ class TokenDAO:
             logger.error(f"❌ 查询 Token 失败: {e}")
             return []
 
+    async def get_tokens_needing_chat_cleanup(self, provider: str, interval_days: int) -> List[Dict]:
+        try:
+            from sqlalchemy.orm import selectinload
+            from datetime import timedelta, datetime, timezone
+            
+            async with self.session_factory() as session:
+                threshold_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=interval_days)
+                
+                stmt = select(Token).options(selectinload(Token.stats)).filter_by(provider=provider, is_enabled=True)
+                stmt = stmt.filter(
+                    (Token.last_chat_cleanup == None) | (Token.last_chat_cleanup <= threshold_time)
+                )
+                
+                stmt = stmt.order_by(Token.priority.desc(), Token.id.asc())
+                result = await session.execute(stmt)
+                return [self._format_token_row(t) for t in result.scalars()]
+        except Exception as e:
+            logger.error(f"❌ 查询需要清理会话的 Token 失败: {e}")
+            return []
+
     async def get_all_tokens(self, enabled_only: bool = False) -> List[Dict]:
         try:
             from sqlalchemy.orm import selectinload
@@ -161,6 +182,18 @@ class TokenDAO:
                 logger.info(f"✅ 更新 Token 状态: id={token_id}, enabled={is_enabled}")
         except Exception as e:
             logger.error(f"❌ 更新 Token 状态失败: {e}")
+
+    async def update_last_chat_cleanup(self, token_id: int):
+        try:
+            from datetime import datetime, timezone
+            async with self.session_factory() as session:
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                stmt = update(Token).where(Token.id == token_id).values(last_chat_cleanup=now)
+                await session.execute(stmt)
+                await session.commit()
+                logger.debug(f"ℹ️ 更新 Token 会话清理时间: id={token_id}")
+        except Exception as e:
+            logger.error(f"❌ 更新 Token 会话清理时间失败: {e}")
 
     async def update_token_type(self, token_id: int, token_type: str):
         try:
