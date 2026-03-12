@@ -31,6 +31,7 @@ from app.utils.logger import get_logger
 from app.utils.tool_call_handler import (
     StreamingFunctionCallDetector,
     parse_and_extract_tool_calls,
+    parse_function_calls_xml,
 )
 
 logger = get_logger()
