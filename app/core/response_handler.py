@@ -32,6 +32,7 @@ from app.utils.tool_call_handler import (
     StreamingFunctionCallDetector,
     parse_and_extract_tool_calls,
     parse_function_calls_xml,
+    validate_parsed_tools,
 )
 
 logger = get_logger()

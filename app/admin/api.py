@@ -665,6 +665,28 @@ async def get_live_logs():
 
     return HTMLResponse(html)
 
+@router.get(
+    "/live-logs/download",
+    dependencies=[Depends(require_auth)],
+)
+async def download_live_logs():
+    """下载最新的日志文件"""
+    import os
+    from fastapi.responses import FileResponse, HTMLResponse
+    
+    log_dir = "logs"
+    if os.path.exists(log_dir):
+        log_files = sorted([f for f in os.listdir(log_dir) if f.endswith('.log')], reverse=True)
+        if log_files:
+            log_file = os.path.join(log_dir, log_files[0])
+            return FileResponse(
+                path=log_file, 
+                filename=log_files[0], 
+                media_type='text/plain'
+            )
+            
+    return HTMLResponse("日志文件不存在", status_code=404)
+
 
 # ==================== Token 管理 API ====================
 

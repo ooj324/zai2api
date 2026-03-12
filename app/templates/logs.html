@@ -10,10 +10,28 @@
             <p class="mt-1 text-sm text-gray-600">滚动查看服务当前输出的最新日志</p>
         </div>
         <div class="flex items-center space-x-3">
-            <button onclick="window.location.reload()"
-                class="px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors">
-                刷新页面
+            <!-- 行数显示 -->
+            <span class="text-sm font-medium text-gray-600 bg-gray-100 px-2 py-1.5 rounded" id="log-line-count">0 行</span>
+            
+            <!-- 自动刷新 Toggle -->
+            <label class="flex items-center space-x-2 cursor-pointer bg-gray-50 px-3 py-1.5 rounded border border-gray-200 hover:bg-gray-100 transition-colors">
+                <input type="checkbox" id="auto-refresh-toggle" class="form-checkbox h-4 w-4 text-slate-800 transition duration-150 ease-in-out" checked onchange="toggleAutoRefresh(this.checked)">
+                <span class="text-sm text-gray-700 select-none">自动刷新</span>
+            </label>
+
+            <!-- 手动刷新按钮 -->
+            <button onclick="manualRefresh()" id="manual-refresh-btn" disabled
+                class="px-3 py-1.5 bg-slate-100 text-slate-400 text-sm rounded transition-colors flex items-center cursor-not-allowed opacity-50">
+                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                刷新
             </button>
+
+            <!-- 下载按钮 -->
+            <a href="/admin/api/live-logs/download" target="_blank"
+                class="px-3 py-1.5 bg-slate-800 text-white text-sm rounded hover:bg-slate-700 transition-colors flex items-center">
+                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                下载日志
+            </a>
         </div>
     </div>
 
@@ -22,15 +40,14 @@
             <h3 class="text-lg font-medium text-gray-900">日志流</h3>
             <div class="flex space-x-2">
                 <button
-                    onclick="document.getElementById('live-logs').innerHTML = '<div class=\'text-center text-gray-500 py-4\'>日志已清空</div>'"
+                    onclick="clearLogs()"
                     class="px-3 py-1 text-sm bg-gray-200 hover:bg-gray-300 rounded-md transition-colors">
                     清空
                 </button>
             </div>
         </div>
         <div class="p-6">
-            <div id="live-logs" hx-get="/admin/api/live-logs" hx-trigger="load, every 3s"
-                hx-swap="innerHTML scroll:bottom"
+            <div id="live-logs"
                 class="bg-gray-900 text-gray-100 p-4 rounded-md font-mono text-sm overflow-y-auto overflow-x-auto whitespace-pre-wrap break-all"
                 style="max-height: 600px;">
                 <div class="flex justify-center items-center py-8">
@@ -45,11 +62,82 @@
 {% block extra_scripts %}
 <script>
     const logsContainer = document.getElementById('live-logs');
+    const lineCountSpan = document.getElementById('log-line-count');
+    const manualRefreshBtn = document.getElementById('manual-refresh-btn');
+    let autoRefreshInterval = null;
+    let isAutoRefresh = true;
 
-    document.body.addEventListener('htmx:afterSwap', function (event) {
-        if (event.detail.target.id === 'live-logs') {
+    async function fetchLogs() {
+        try {
+            const response = await fetch('/admin/api/live-logs');
+            if (response.ok) {
+                const html = await response.text();
+                logsContainer.innerHTML = html;
+                logsContainer.scrollTop = logsContainer.scrollHeight;
+                
+                // Update line count (count number of inner divs or lines)
+                const lines = logsContainer.querySelectorAll('div').length;
+                lineCountSpan.textContent = `${lines} 行`;
+            }
+        } catch (error) {
+            console.error('Failed to fetch logs:', error);
+            logsContainer.innerHTML += '<div class="text-red-500 py-1">获取日志失败，请检查网络连接</div>';
             logsContainer.scrollTop = logsContainer.scrollHeight;
         }
+    }
+
+    function toggleAutoRefresh(enabled) {
+        isAutoRefresh = enabled;
+        if (enabled) {
+            startAutoRefresh();
+            // Disable manual refresh button
+            manualRefreshBtn.disabled = true;
+            manualRefreshBtn.classList.replace('bg-slate-800', 'bg-slate-100');
+            manualRefreshBtn.classList.replace('text-white', 'text-slate-400');
+            manualRefreshBtn.classList.replace('hover:bg-slate-700', 'cursor-not-allowed');
+            manualRefreshBtn.classList.add('opacity-50');
+        } else {
+            stopAutoRefresh();
+            // Enable manual refresh button
+            manualRefreshBtn.disabled = false;
+            manualRefreshBtn.classList.replace('bg-slate-100', 'bg-slate-800');
+            manualRefreshBtn.classList.replace('text-slate-400', 'text-white');
+            manualRefreshBtn.classList.replace('cursor-not-allowed', 'hover:bg-slate-700');
+            manualRefreshBtn.classList.remove('opacity-50');
+        }
+    }
+
+    function startAutoRefresh() {
+        if (!autoRefreshInterval) {
+            autoRefreshInterval = setInterval(fetchLogs, 3000);
+        }
+    }
+
+    function stopAutoRefresh() {
+        if (autoRefreshInterval) {
+            clearInterval(autoRefreshInterval);
+            autoRefreshInterval = null;
+        }
+    }
+
+    function manualRefresh() {
+        if (!isAutoRefresh) {
+            fetchLogs();
+        }
+    }
+
+    function clearLogs() {
+        logsContainer.innerHTML = '<div class="text-center text-gray-500 py-4">日志已清空</div>';
+        lineCountSpan.textContent = '0 行';
+    }
+
+    // Initialize state
+    document.addEventListener('DOMContentLoaded', () => {
+        const toggle = document.getElementById('auto-refresh-toggle');
+        if (toggle) {
+            toggleAutoRefresh(toggle.checked);
+        }
+        fetchLogs();
     });
 </script>
 {% endblock %}
