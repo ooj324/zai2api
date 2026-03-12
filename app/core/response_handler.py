@@ -200,9 +200,9 @@ class ResponseHandler:
         start_time = getattr(request, "started_at", None)
         if start_time:
             ttfb = time.perf_counter() - start_time
-            self.logger.info(f"上游响应成功，开始处理 SSE 流，响应成功耗时: {ttfb:.3f}s")
+            self.logger.info(f"upstream success, start handle SSE stream, ttfb: {ttfb:.3f}s")
         else:
-            self.logger.info("上游响应成功，开始处理 SSE 流")
+            self.logger.info("upstream success, start handle SSE stream")
 
         sse_start_time = time.perf_counter()
 
@@ -306,6 +306,24 @@ class ResponseHandler:
                             self.logger.warning(
                                 f"⚠️ 流结束时 Schema 验证失败: {validation_err}"
                             )
+                            # 智能降级: 只要每个调用都有 name 且 args 非空，
+                            # 就视为可用，忽略 schema 约束（避免因 CDATA 损坏等
+                            # 导致正确解析的工具调用被丢弃）
+                            usable = [
+                                p for p in parsed
+                                if p.get("name") and isinstance(p.get("args"), dict) and p["args"]
+                            ]
+                            if usable:
+                                self.logger.warning(
+                                    f"⚠️ Schema 验证失败但参数非空, 强制发送 {len(usable)} 个工具调用"
+                                )
+                                tc_chunks = build_tool_calls_chunks(usable)
+                                role_output = await ensure_role_sent()
+                                if role_output:
+                                    yield role_output
+                                for tc_chunk in tc_chunks:
+                                    yield tc_chunk
+                                tool_calls_accum = usable
                         else:
                             tc_chunks = build_tool_calls_chunks(parsed)
                             role_output = await ensure_role_sent()
@@ -415,6 +433,7 @@ class ResponseHandler:
                 phase = data.get("phase")
                 delta_content = data.get("delta_content", "")
                 edit_content = data.get("edit_content", "")
+                edit_index = data.get("edit_index")  # 上游指定的插入/替换位置
 
                 # 检测上游 SSE 事件中的错误
                 sse_error = data.get("error")
@@ -453,13 +472,34 @@ class ResponseHandler:
                     self.logger.debug(f"🔍 [usage] 解析到 chunk.usage: {usage_info}")
 
                 # 累积内容
+                # edit_index: 上游指定在 buffered_content 中的插入位置
+                # 若缺失或越界则退回到追加模式（安全兜底）
                 current_text = ""
                 if delta_content:
                     current_text = delta_content
                     buffered_content += delta_content
                 elif edit_content:
                     current_text = edit_content
-                    buffered_content += edit_content
+                    if edit_index is not None and isinstance(edit_index, int):
+                        # 防御性校验: 索引必须在合法范围内
+                        safe_idx = max(0, min(edit_index, len(buffered_content)))
+                        if safe_idx != edit_index:
+                            self.logger.debug(
+                                f"🔧 edit_index {edit_index} 越界 (buffered={len(buffered_content)}), "
+                                f"截断为 {safe_idx}"
+                            )
+                        # 在指定位置插入（不替换），保留后续内容
+                        buffered_content = (
+                            buffered_content[:safe_idx]
+                            + edit_content
+                            + buffered_content[safe_idx:]
+                        )
+                        self.logger.debug(
+                            f"🔧 edit_index={edit_index}: 在位置 {safe_idx} 插入 "
+                            f"{len(edit_content)} 字符, buffered 总长={len(buffered_content)}"
+                        )
+                    else:
+                        buffered_content += edit_content
 
                 # 上游原生 tool_calls 直接透传
                 direct_tool_calls = self.normalize_tool_calls(
@@ -599,8 +639,7 @@ class ResponseHandler:
                                 )
                             else:
                                 self.logger.info(
-                                    f"流式检测解析成功: "
-                                    f"{len(parsed)} 个工具调用"
+                                    f"stream success detect: {len(parsed)} tools"
                                 )
                                 tc_chunks = build_tool_calls_chunks(parsed)
                                 role_output = await ensure_role_sent()
@@ -698,11 +737,11 @@ class ResponseHandler:
             total_elapsed = time.perf_counter() - start_time if start_time else None
             if total_elapsed is not None:
                 self.logger.info(
-                    f"SSE 流处理完成，共处理 {line_count} 行数据，处理SSE耗时: {elapsed:.3f}s，总响应耗时: {total_elapsed:.3f}s"
+                    f"SSE done {line_count} lines, SSE time: {elapsed:.3f}s, total time: {total_elapsed:.3f}s"
                 )
             else:
                 self.logger.info(
-                    f"SSE 流处理完成，共处理 {line_count} 行数据，处理SSE耗时: {elapsed:.3f}s"
+                    f"SSE done {line_count} lines, SSE time: {elapsed:.3f}s"
                 )
 
     # ------------------------------------------------------------------
@@ -773,13 +812,7 @@ class ResponseHandler:
                 phase = data.get("phase")
                 delta_content = data.get("delta_content", "")
                 edit_content = data.get("edit_content", "")
-
-                if data.get("usage"):
-                    usage_info = data["usage"]
-                    self.logger.info(f"🔍 [Non-Stream] 解析到 data.usage: {usage_info}")
-                elif chunk.get("usage"):
-                    usage_info = chunk["usage"]
-                    self.logger.info(f"🔍 [Non-Stream] 解析到 chunk.usage: {usage_info}")
+                edit_index = data.get("edit_index")  # 上游指定的插入位置
 
                 if phase == "thinking" and delta_content:
                     reasoning_content += self.clean_reasoning_delta(delta_content)
@@ -788,10 +821,20 @@ class ResponseHandler:
                     if delta_content:
                         final_content += delta_content
                     elif edit_content:
-                        final_content += self.extract_answer_content(edit_content)
+                        ec = self.extract_answer_content(edit_content)
+                        if edit_index is not None and isinstance(edit_index, int):
+                            safe_idx = max(0, min(edit_index, len(final_content)))
+                            final_content = final_content[:safe_idx] + ec + final_content[safe_idx:]
+                        else:
+                            final_content += ec
 
                 elif phase == "other" and edit_content:
-                    final_content += self.extract_answer_content(edit_content)
+                    ec = self.extract_answer_content(edit_content)
+                    if edit_index is not None and isinstance(edit_index, int):
+                        safe_idx = max(0, min(edit_index, len(final_content)))
+                        final_content = final_content[:safe_idx] + ec + final_content[safe_idx:]
+                    else:
+                        final_content += ec
 
                 elif phase == "search" or chunk_type == "web_search":
                     final_content += self.format_search_results(data)
@@ -836,7 +879,7 @@ class ResponseHandler:
                         if trigger_pos >= 0:
                             final_content = final_content[:trigger_pos].strip()
                         self.logger.info(
-                            f"✅ 非流式 XML 解析成功: {len(normalized)} 个工具调用"
+                            f"nostream XML parse success: {len(normalized)} tools"
                         )
                 else:
                     self.logger.warning(

@@ -692,7 +692,7 @@ class UpstreamClient:
 
         message_id = generate_uuid()
         if tools:
-            self.logger.info(
+            self.logger.debug(
                 f"工具定义: {len(tools)} 个工具；"
                 "XML 提示已注入，tools/tool_choice 不透传到上游 body"
             )

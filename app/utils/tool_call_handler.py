@@ -597,7 +597,13 @@ def _parse_args_json_payload(payload: str) -> Optional[Dict[str, Any]]:
 
 
 def _extract_cdata_text(raw: str) -> str:
-    """提取 CDATA 文本（含畸形 CDATA 修复）"""
+    """提取 CDATA 文本（含畸形 CDATA 修复及流式截断恢复）。
+
+    处理三种情形:
+    1. 标准 CDATA: <![CDATA[...]]>  → 正常提取
+    2. CDATA 开头存在但 ]]> 不紧跟 → rfind 兜底
+    3. 流式截断: <![CDATA[... 末尾无 ]]> → 提取所有后续内容
+    """
     if raw is None:
         return ""
 
@@ -607,20 +613,46 @@ def _extract_cdata_text(raw: str) -> str:
     if "<![CDATA[" not in raw:
         return raw
 
-    # 拼接分割的 CDATA 段
+    # Case 1: 完整 CDATA 段(可多段)
     parts = re.findall(r"<!\[CDATA\[(.*?)\]\]>", raw, flags=re.DOTALL)
     if parts:
         return "".join(parts)
 
-    # 未终止的 CDATA: 尝试提取内容
+    # Case 2 & 3: CDATA 开头存在但无对应 ]]>
     st = raw.find("<![CDATA[")
     if st != -1:
-        st += len("<![CDATA[")
+        content_start = st + len("<![CDATA[")
         ed = raw.rfind("]]>")
-        if ed > st:
-            return raw[st:ed]
-        return ""
+        if ed > content_start:
+            # Case 2: ]]> 在别处
+            return raw[content_start:ed]
+        # Case 3: 流式截断 — 取 <![CDATA[ 之后的全部内容
+        # (流式边界可能在 ]]> 到达之前就结束了)
+        tail = raw[content_start:]
+        # 移除可能出现在末尾的不完整终止符碎片 (] 或 ]])
+        tail = re.sub(r'\]?\]?$', '', tail) if tail.endswith(']') else tail
+        logger.debug(f"🔧 CDATA 流式截断恢复: 提取 {len(tail)} 字符")
+        return tail
     return raw
+
+
+def repair_unclosed_cdata(xml_str: str) -> str:
+    """为 XML 字符串中所有未闭合的 CDATA 段补充 ]]> 终止符。
+
+    ET 解析器遇到未闭合的 CDATA 会抛出 ParseError: unclosed CDATA section。
+    此函数在交给 ET 之前补全缺失的终止符，使 ET 能正常解析。
+    """
+    if not xml_str or "<![CDATA[" not in xml_str:
+        return xml_str
+
+    open_count = xml_str.count("<![CDATA[")
+    close_count = xml_str.count("]]>")
+    missing = open_count - close_count
+    if missing <= 0:
+        return xml_str
+
+    logger.debug(f"🔧 检测到 {missing} 个未闭合 CDATA, 自动补全终止符")
+    return xml_str + "]]>" * missing
 
 
 def parse_function_calls_xml(
@@ -691,8 +723,10 @@ def parse_function_calls_xml(
     results: List[Dict[str, Any]] = []
 
     # 主路径: 严格 XML 解析
+    # ★ 在交给 ET 之前补全未闭合的 CDATA 终止符,
+    #   防止流式截断造成 "unclosed CDATA section" ParseError
     try:
-        root = ET.fromstring(calls_xml)
+        root = ET.fromstring(repair_unclosed_cdata(calls_xml))
         for i, fc in enumerate(root.findall("function_call")):
             tool_el = fc.find("tool")
             name = (tool_el.text or "").strip() if tool_el is not None else ""
@@ -748,6 +782,21 @@ def parse_function_calls_xml(
                 logger.debug(f"🔧 function_call #{i+1} (正则) args_json 无效; 视为解析失败")
                 return None
             args = parsed_args
+        elif args_json_open != -1 and args_json_close == -1:
+            # ★ 流式截断: <args_json> 存在但 </args_json> 缺失
+            # 取 <args_json> 之后的全部内容尝试解析
+            raw_tail = block[args_json_open + len("<args_json>"):]
+            payload = _extract_cdata_text(raw_tail)
+            parsed_args = _parse_args_json_payload(payload)
+            if parsed_args is not None:
+                logger.debug(
+                    f"🔧 function_call #{i+1} (正则) args_json 流式截断恢复成功: {list(parsed_args.keys())}"
+                )
+                args = parsed_args
+            else:
+                logger.debug(
+                    f"🔧 function_call #{i+1} (正则) args_json 流式截断恢复失败, 使用空 args"
+                )
         else:
             args_block_match = re.search(r"<args>([\s\S]*?)</args>", block)
             if args_block_match:

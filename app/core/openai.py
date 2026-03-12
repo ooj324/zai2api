@@ -171,7 +171,7 @@ async def chat_completions(
 
     role = body.messages[0].role if body.messages else "unknown"
     logger.info(
-        f"{source_prefix} 收到客户端请求 - 模型: {body.model}, 流式: {body.stream}, 消息数: {len(body.messages)}, 角色: {role}, 工具数: {len(body.tools) if body.tools else 0}"
+        f"{source_prefix} OpenAI req - model: {body.model}, stream: {body.stream}, messages: {len(body.messages)}, role: {role}, tools: {len(body.tools) if body.tools else 0}"
     )
     logger.debug(f"{source_prefix} 客户端请求原样数据: {body}")
 
