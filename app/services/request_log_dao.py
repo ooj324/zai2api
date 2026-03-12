@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.database import async_session as global_async_session
+from app.database import get_db_session as global_async_session
 from app.models.db_models import RequestLog
 from app.utils.logger import logger
 

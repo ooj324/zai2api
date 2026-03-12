@@ -2,6 +2,7 @@ import os
 import ssl as _stdlib_ssl
 from typing import AsyncGenerator
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -64,34 +65,50 @@ def get_db_url(db_url: str = None) -> tuple[str, dict]:
             url, connect_args = _clean_db_url(url)
 
         return url, connect_args
-    
-    # 默认使用 SQLite
+
     db_path = settings.DB_PATH
     if not os.path.isabs(db_path):
         db_path = os.path.abspath(db_path)
     return f"sqlite+aiosqlite:///{db_path}", {}
 
+# 1. 声明全局变量为 None，绝不在这里直接实例化
+engine = None
+async_session = None
 
-# 全局引擎和会话工厂
-_db_url, _connect_args = get_db_url()
-engine = create_async_engine(
-    _db_url,
-    echo=False,
-    pool_pre_ping=True,
-    pool_size=5,              # 限制连接池大小
-    max_overflow=10,          # 最大溢出连接数
-    pool_recycle=3600,        # 1小时回收连接
-    pool_timeout=30,          # 获取连接超时
-    connect_args=_connect_args
-)
-async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+def get_session_maker():
+    """懒加载：获取真实的 session_maker，如果不存在则在当前进程初始化"""
+    global engine, async_session
+    if engine is None:
+        _db_url, _connect_args = get_db_url()
+        engine = create_async_engine(
+            _db_url,
+            echo=False,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
+            pool_recycle=3600,
+            pool_timeout=30,
+            connect_args=_connect_args
+        )
+        async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    return async_session
+
+@asynccontextmanager
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """推荐的上下文管理器用法，自动获取 maker 并管理 session"""
+    maker = get_session_maker()
+    async with maker() as session:
+        yield session
 
 async def init_db():
     """初始化数据库表"""
     from app.utils.logger import logger
     
+    # 确保 engine 已被当前 Worker 进程创建
+    get_session_maker()
+    global engine
+    
     async with engine.begin() as conn:
-        # 自动迁移检查（使用 Alembic）
         try:
             from alembic.config import Config
             from alembic import command
@@ -99,19 +116,14 @@ async def init_db():
             
             logger.info("🔧 自动数据库迁移: 准备执行 Alembic...")
             
-            # 获取项目根目录
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             alembic_cfg = Config(os.path.join(base_dir, "alembic.ini"))
             alembic_cfg.set_main_option("script_location", os.path.join(base_dir, "migrations"))
             
             def run_upgrade(connection):
-                logger.info("  -> run_upgrade: setting connection...")
                 alembic_cfg.attributes['connection'] = connection
-                logger.info("  -> run_upgrade: calling command.upgrade...")
                 command.upgrade(alembic_cfg, "head")
-                logger.info("  -> run_upgrade: command.upgrade finished")
                 
-            logger.info("🔧 自动数据库迁移: 正在 run_sync(run_upgrade)...")
             await conn.run_sync(run_upgrade)
             logger.info("✅ 迁移成功")
         except Exception as e:
@@ -119,4 +131,7 @@ async def init_db():
 
 async def close_db():
     """关闭数据库连接"""
-    await engine.dispose()
+    global engine
+    if engine is not None:
+        await engine.dispose()
+        engine = None  # 释放后重置为 None

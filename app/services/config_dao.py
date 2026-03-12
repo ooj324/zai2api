@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.database import async_session as global_async_session
+from app.database import get_db_session as global_async_session
 from app.models.db_models import ConfigItem
 from app.utils.logger import logger
 
