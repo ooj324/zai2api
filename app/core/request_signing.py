@@ -81,14 +81,14 @@ async def process_multimodal_messages(
                         if image_url:
                             logger.debug(f"✅ 检测到图片: {image_url[:50]}...")
                             if image_url.startswith("data:") and auth_mode != "guest":
-                                logger.info("🔄 上传 base64 图片到上游服务")
+                                logger.info("[image] upload base64 image to upstream service")
                                 file_info = await upload_file(
                                     http_client, base_url, image_url,
                                     chat_id, token, user_id, auth_mode=auth_mode,
                                 )
                                 if file_info:
                                     files.append(file_info)
-                                    logger.info("✅ 图片已添加到 files 数组")
+                                    logger.info("[image] image added to files array")
                                     image_ref = f"{file_info['id']}_{file_info['name']}"
                                     image_parts.append({
                                         "type": "image_url",
@@ -114,14 +114,14 @@ async def process_multimodal_messages(
                         if image_url:
                             logger.debug(f"✅ 检测到图片: {image_url[:50]}...")
                             if image_url.startswith("data:") and auth_mode != "guest":
-                                logger.info("🔄 上传 base64 图片到上游服务")
+                                logger.info("[image] upload base64 image to upstream service")
                                 file_info = await upload_file(
                                     http_client, base_url, image_url,
                                     chat_id, token, user_id, auth_mode=auth_mode,
                                 )
                                 if file_info:
                                     files.append(file_info)
-                                    logger.info("✅ 图片已添加到 files 数组")
+                                    logger.info("[image] image added to files array")
                                     image_ref = f"{file_info['id']}_{file_info['name']}"
                                     image_parts.append({
                                         "type": "image_url",
