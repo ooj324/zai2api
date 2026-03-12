@@ -433,6 +433,8 @@ def normalize_cdata_markers(raw: str) -> str:
 
     泛化匹配: 只要检测到包含 CDATA 和 [ 的开头标记,
     就归一化为标准的 <![CDATA[ 和 ]]>。
+
+    也处理模型输出 ]> 代替 ]]> 的情况（缺少一个 ]）。
     """
     if raw is None:
         return ""
@@ -445,6 +447,18 @@ def normalize_cdata_markers(raw: str) -> str:
     # 修复终止符 (仅当存在 CDATA 上下文时)
     if '<![CDATA[' in raw:
         raw = _RE_CDATA_CLOSE_FUZZY.sub(']]>', raw)
+
+        # ★ 修复单括号畸形终止符: ]> → ]]>
+        # 模型有时只输出一个 ] 就跟 >,  仅在 CDATA 仍未平衡时修复
+        open_count = raw.count('<![CDATA[')
+        close_count = raw.count(']]>')
+        if open_count > close_count:
+            # (?<!\]) 确保不会把已修复的 ]]> 再改一次
+            raw = re.sub(r'(?<!\])\]>', ']]>', raw)
+            logger.debug(
+                f"🔧 修复单括号 CDATA 终止符: "
+                f"open={open_count}, close_before={close_count}, close_after={raw.count(']]>')}"
+            )
 
     if raw != original:
         logger.debug(f"🔧 CDATA 标记已修复: {repr(original[:60])} → {repr(raw[:60])}")
@@ -508,7 +522,7 @@ def _is_xml_noise(s: str) -> bool:
     return bool(re.fullmatch(
         r'(?:'
         r'<!\s*\[?\s*(?:CDATA\s*)*\[?'  # 畸形 CDATA 开头碎片
-        r'|\]\s*\]\s*>?'                 # CDATA 终止符碎片
+        r'|\]\s*\]?\s*>?'                # CDATA 终止符碎片 (含单括号 ]>)
         r'|\s'                           # 空白
         r')+',
         stripped,
@@ -629,8 +643,9 @@ def _extract_cdata_text(raw: str) -> str:
         # Case 3: 流式截断 — 取 <![CDATA[ 之后的全部内容
         # (流式边界可能在 ]]> 到达之前就结束了)
         tail = raw[content_start:]
-        # 移除可能出现在末尾的不完整终止符碎片 (] 或 ]])
-        tail = re.sub(r'\]?\]?$', '', tail) if tail.endswith(']') else tail
+        # 移除可能出现在末尾的不完整终止符碎片
+        # 覆盖: ]]>, ]>, ]], ] (从长到短匹配)
+        tail = re.sub(r'\]\]?>?$', '', tail)
         logger.debug(f"🔧 CDATA 流式截断恢复: 提取 {len(tail)} 字符")
         return tail
     return raw
@@ -641,6 +656,8 @@ def repair_unclosed_cdata(xml_str: str) -> str:
 
     ET 解析器遇到未闭合的 CDATA 会抛出 ParseError: unclosed CDATA section。
     此函数在交给 ET 之前补全缺失的终止符，使 ET 能正常解析。
+    会尝试在结构上合理的位置插入（最近的 XML 闭合标签前），
+    而非简单追加到末尾。
     """
     if not xml_str or "<![CDATA[" not in xml_str:
         return xml_str
@@ -652,7 +669,22 @@ def repair_unclosed_cdata(xml_str: str) -> str:
         return xml_str
 
     logger.debug(f"🔧 检测到 {missing} 个未闭合 CDATA, 自动补全终止符")
-    return xml_str + "]]>" * missing
+
+    # 智能插入: 在最后一个未闭合 <![CDATA[ 之后，
+    # 找第一个 </args_json> 或 </function_call> 或任意 </ 标签前插入
+    result = xml_str
+    for _ in range(missing):
+        last_open = result.rfind("<![CDATA[")
+        search_start = last_open + len("<![CDATA[")
+        # 尝试在最近的 XML 闭合标签前插入
+        close_tag = re.search(r'</', result[search_start:])
+        if close_tag:
+            insert_pos = search_start + close_tag.start()
+            result = result[:insert_pos] + "]]>" + result[insert_pos:]
+        else:
+            result += "]]>"
+
+    return result
 
 
 def parse_function_calls_xml(
