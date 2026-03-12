@@ -3,6 +3,8 @@
 
 import os
 import sys
+import signal
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
@@ -19,6 +21,23 @@ from app.utils.reload_config import RELOAD_CONFIG
 
 # Setup logger
 logger = setup_logger(log_dir="logs", debug_mode=settings.DEBUG_LOGGING)
+
+
+def setup_signal_handlers():
+    """设置信号处理器，确保进程退出时清理资源"""
+    def handle_exit(signum, frame):
+        logger.info(f"🛑 收到信号 {signum}，正在清理资源...")
+        # 强制关闭数据库连接池
+        try:
+            from app.database import engine
+            if engine:
+                asyncio.create_task(engine.dispose())
+        except Exception as e:
+            logger.error(f"❌ 信号处理器清理失败: {e}")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_exit)
+    signal.signal(signal.SIGINT, handle_exit)
 
 
 async def warmup_upstream_client():
@@ -163,6 +182,9 @@ async def root():
 def run_server():
     service_name = settings.SERVICE_NAME
 
+    # 设置信号处理器
+    setup_signal_handlers()
+
     logger.info(f"🚀 启动 {service_name} 服务...")
     logger.info(f"📡 监听地址: 0.0.0.0:{settings.LISTEN_PORT}")
     logger.info(f"🔧 调试模式: {'开启' if settings.DEBUG_LOGGING else '关闭'}")
@@ -175,6 +197,8 @@ def run_server():
             address="0.0.0.0",
             port=settings.LISTEN_PORT,
             reload=False,  # 生产环境关闭热重载
+            workers=1,     # 单进程模式，避免多进程连接池问题
+            threads=4,     # 使用线程提高并发
             process_name=service_name,  # 设置进程名称
             **RELOAD_CONFIG,    # 热重载配置
         ).serve()
