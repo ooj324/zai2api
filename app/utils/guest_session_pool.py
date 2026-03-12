@@ -273,7 +273,7 @@ class GuestSessionPool:
                         logger.warning(f"⚠️ 匿名会话池补齐连续失败 {consecutive_failures} 次, 下次重试将等待 {next_sleep} 秒")
                 else:
                     if consecutive_failures > 0:
-                        logger.info("✔️ 匿名会话池补齐恢复正常")
+                        logger.info("[pool] guest session pool maintenance success")
                         consecutive_failures = 0
 
             except asyncio.CancelledError:
@@ -316,13 +316,13 @@ class GuestSessionPool:
                 with self._lock:
                     self._sessions[fallback.user_id] = fallback
                 created = 1
-                logger.info("✔️ 匿名会话池已初始化完成")
+                logger.info("[pool] guest session pool success initialize")
             except Exception as e:
-                logger.error(f"❌ 匿名会话池初始化失败: {e}，将在后台重试")
+                logger.error(f"[pool] guest session pool initialize failed: {e}，retrying in background")
         else:
-            logger.info(f"✔️ 匿名会话池已初始化完成，当前容量: {created}")
+            logger.info(f"[pool] guest session pool initialize success, current capacity: {created}")
 
-        logger.info(f"✅ 匿名会话池初始化完成: {created} 个会话")
+        logger.info(f"[pool] guest session pool initialize success: {created} sessions")
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
     async def close(self):
