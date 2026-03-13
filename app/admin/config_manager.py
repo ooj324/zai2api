@@ -107,6 +107,13 @@ CONFIG_SECTIONS: tuple[ConfigSectionSpec, ...] = (
                 value_type="bool",
                 default_value=False,
             ),
+            ConfigFieldSpec(
+                key="SESSION_ENABLED",
+                label="会话管理",
+                description="启用官方链式会话复用，关闭则每次请求使用独立会话。",
+                value_type="bool",
+                default_value=False,
+            ),
         ),
     ),
     ConfigSectionSpec(

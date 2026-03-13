@@ -97,66 +97,91 @@ class SessionManager:
     # 公共接口
     # ──────────────────────────────────────────────────────────────────
 
-    async def find_or_create_session(
+    async def find_session(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        client_id: Optional[str] = None,
+    ) -> Optional[SessionResult]:
+        """Find matching continuous session by fingerprint. Returns None if not found.
+
+        Unlike find_or_create_session, this method only searches -- it never
+        creates a new session.  On match it updates fingerprints, last_message_id
+        and timestamps so that subsequent turns keep chaining correctly.
+
+        Args:
+            model: Model name used for index grouping.
+            messages: Full message list (OpenAI format) for fingerprint matching.
+            client_id: Optional explicit client ID (used for index key if provided).
+
+        Returns:
+            SessionResult on match, None otherwise.
+        """
+        self._ensure_cleanup_started()
+
+        index_identifier = client_id or model
+        client_fp = self._fp.generate_client_fingerprint(index_identifier, model)
+
+        match = await self._match_session(client_fp, messages)
+        if not match:
+            return None
+
+        session = match
+        message_id = _new_uuid()
+        chat_id = session["chat_id"]
+        parent_id = session.get("last_message_id")
+
+        # Update session: new fingerprints + new message_id
+        new_fps = self._fp.collect_fingerprints(messages)
+        session["fingerprints"] = new_fps
+        session["last_message_id"] = message_id
+        session["last_update"] = time.time()
+        await self._save_session(client_fp, chat_id, session)
+        await self._touch_fp_index(client_fp, chat_id)
+
+        logger.debug(
+            f"♻️ 连续会话复用: chat_id={chat_id[:8]}... "
+            f"parent_id={parent_id[:8] if parent_id else 'None'}..."
+        )
+        return SessionResult(
+            chat_id=chat_id,
+            message_id=message_id,
+            parent_id=parent_id,
+            is_new=False,
+            bound_token=session.get("auth_token"),
+        )
+
+    async def create_session(
         self,
         auth_token: str,
         model: str,
         messages: List[Dict[str, Any]],
+        chat_id: str,
+        message_id: str,
         client_id: Optional[str] = None,
     ) -> SessionResult:
-        """查找匹配的会话，不存在时创建新会话。
+        """Create a new session with an externally-provided chat_id (from upstream).
+
+        This is the counterpart to find_session: the caller has already obtained
+        a chat_id from the upstream /chats/new endpoint and wants to store it
+        for future reuse.
 
         Args:
-            auth_token: 上游认证令牌（存储在会话记录中，复用时作为 bound_token 返回）。
-            model: 请求使用的模型名称（会话索引按 model 分组）。
-            messages: 完整消息列表（OpenAI 格式）。
-            client_id: 可选的显式客户端 ID（如提供则用于索引 key，否则仅用 model）。
+            auth_token: Upstream auth token (stored for bound_token on reuse).
+            model: Model name for index grouping.
+            messages: Full message list (OpenAI format) for fingerprint collection.
+            chat_id: Chat ID returned by the upstream pre-create endpoint.
+            message_id: UUID generated for this turn's message.
+            client_id: Optional explicit client ID (used for index key if provided).
 
         Returns:
-            SessionResult：包含 chat_id、message_id、parent_id、is_new、bound_token。
-
-        Note:
-            会话索引按 model（或 client_id）分组，而非按 token 分组。
-            这样同一 model 下不同 token 可以共享会话，由消息指纹区分不同对话。
+            SessionResult with is_new=True.
         """
         self._ensure_cleanup_started()
 
-        # 索引 key：优先用 client_id，否则只用 model（不含 token）
-        # 这样 token 池轮询到不同 token 时，仍能找到同一会话
         index_identifier = client_id or model
         client_fp = self._fp.generate_client_fingerprint(index_identifier, model)
 
-        # 尝试匹配已有会话
-        match = await self._match_session(client_fp, messages)
-        message_id = _new_uuid()
-
-        if match:
-            session = match
-            chat_id = session["chat_id"]
-            parent_id = session.get("last_message_id")  # 上次的 message_id
-
-            # 更新会话：新指纹 + 新 message_id
-            new_fps = self._fp.collect_fingerprints(messages)
-            session["fingerprints"] = new_fps
-            session["last_message_id"] = message_id
-            session["last_update"] = time.time()
-            await self._save_session(client_fp, chat_id, session)
-            await self._touch_fp_index(client_fp, chat_id)
-
-            logger.info(
-                f"♻️ 连续会话复用: chat_id={chat_id[:8]}... "
-                f"parent_id={parent_id[:8] if parent_id else 'None'}..."
-            )
-            return SessionResult(
-                chat_id=chat_id,
-                message_id=message_id,
-                parent_id=parent_id,
-                is_new=False,
-                bound_token=session.get("auth_token"),
-            )
-
-        # 新建会话
-        chat_id = _new_uuid()
         fingerprints = self._fp.collect_fingerprints(messages)
         record: Dict[str, Any] = {
             "chat_id": chat_id,
@@ -172,7 +197,7 @@ class SessionManager:
         await self._save_session(client_fp, chat_id, record)
         await self._update_fp_index(client_fp, chat_id)
 
-        logger.info(f"❇️ 新建会话: chat_id={chat_id[:8]}... model={model}")
+        logger.debug(f"❇️ 新建会话: chat_id={chat_id[:8]}... model={model}")
         return SessionResult(
             chat_id=chat_id,
             message_id=message_id,

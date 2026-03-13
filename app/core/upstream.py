@@ -44,11 +44,9 @@ from app.core.retry_policy import (
 )
 from app.core.response_handler import ResponseHandler
 from app.core.toolify import ToolifyRequestHandler
+from app.core.session import SessionManager, SessionResult
 from app.core.file_upload import upload_file as _upload_file
 from app.core.openai_compat import (
-    create_openai_chunk,
-    create_openai_response_with_reasoning,
-    format_sse_chunk,
     get_error_message,
     handle_error,
 )
@@ -88,6 +86,11 @@ class UpstreamClient:
         self._retry_policy = RetryPolicy()
         self._response_handler = ResponseHandler()
         self._toolify_request_handler = ToolifyRequestHandler()
+        self._session_manager = SessionManager(
+            session_ttl=settings.SESSION_TTL,
+            max_sessions_per_client=settings.SESSION_MAX_PER_CLIENT,
+            cleanup_interval=settings.SESSION_CLEANUP_INTERVAL,
+        )
 
         # 在线模型缓存（实例变量，避免多实例混用）
         self._online_models: Optional[List[Dict[str, Any]]] = None
@@ -105,8 +108,9 @@ class UpstreamClient:
         return self._http_clients.get_stream_client()
 
     async def close(self) -> None:
-        """关闭共享 HTTP 客户端连接。"""
+        """关闭共享 HTTP 客户端连接和会话管理器。"""
         await self._http_clients.close()
+        await self._session_manager.close()
 
     # ------------------------------------------------------------------
     # 重试预算（委托到 RetryPolicy）
@@ -684,14 +688,10 @@ class UpstreamClient:
         guest_user_id = auth_info.get("guest_user_id")
 
         try:
-            # 生成 message_id（后续 chats/new 和 completions 共用）
-            message_id = generate_uuid()
-            user_msg_id = generate_uuid()
-
-            # 提取最后一条用户消息（用于签名和会话预创建）
+            # 提取最后一条用户消息（用于签名和会话预创建，两种模式均需要）
             last_user_text = extract_last_user_text(raw_messages)
 
-            # 解析模型特性
+            # 解析模型特性（两种模式均需要，precreate 路径也依赖 features）
             features = self._model_manager.resolve_model_features(request)
             self.logger.debug(
                 "Resolved model features for {}: {}, temperature={}, max_tokens={}",
@@ -701,28 +701,79 @@ class UpstreamClient:
                 request.max_tokens,
             )
 
-            # 预创建会话：对齐浏览器流程，避免上游 done 阶段 INTERNAL_ERROR
-            chat_id = await self._precreate_chat(
-                token=token,
-                fe_version=fe_version,
-                model=features["upstream_model_id"],
-                user_msg_id=user_msg_id,
-                content=last_user_text,
-                enable_thinking=features["enable_thinking"],
-                auto_web_search=features["auto_web_search"],
-                mcp_servers=features.get("mcp_servers", []),
-            )
+            # ── Session mode vs Direct mode ──
+            if settings.SESSION_ENABLED:
+                # Try to find an existing continuous session
+                session_result = await self._session_manager.find_session(
+                    model=request.model,
+                    messages=raw_messages,
+                )
+                if session_result:
+                    # Continuous session: reuse chat_id, chain via parent_id
+                    chat_id = session_result.chat_id
+                    message_id = session_result.message_id
+                    user_msg_id = generate_uuid()
+                    parent_id = session_result.parent_id
+                    self.logger.debug(
+                        "♻️ 复用会话 chat_id={}, parent_id={}",
+                        chat_id[:8],
+                        parent_id[:8] if parent_id else "None",
+                    )
+                else:
+                    # New session: precreate chat on upstream
+                    message_id = generate_uuid()
+                    user_msg_id = generate_uuid()
+                    chat_id = await self._precreate_chat(
+                        token=token,
+                        fe_version=fe_version,
+                        model=features["upstream_model_id"],
+                        user_msg_id=user_msg_id,
+                        content=last_user_text,
+                        enable_thinking=features["enable_thinking"],
+                        auto_web_search=features["auto_web_search"],
+                        mcp_servers=features.get("mcp_servers", []),
+                    )
+                    parent_id = None
+                    # Store session for future reuse
+                    await self._session_manager.create_session(
+                        auth_token=token,
+                        model=request.model,
+                        messages=raw_messages,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                    )
+            else:
+                # Direct mode: random UUID, no session management
+                chat_id = generate_uuid()
+                message_id = generate_uuid()
+                user_msg_id = generate_uuid()
+                parent_id = None
 
             # 处理多模态消息（图片上传）
-            messages, files = await process_multimodal_messages(
-                normalized_messages=normalized_messages,
-                token=token,
-                user_id=user_id,
-                chat_id=chat_id,
-                auth_mode=auth_mode,
-                http_client=self._get_shared_client(),
-                base_url=self.base_url,
-            )
+            if settings.SESSION_ENABLED:
+                # Session mode: only send the latest user message.
+                # The upstream maintains full history server-side.
+                session_body_messages = [{"role": "user", "content": last_user_text}]
+                messages, files = await process_multimodal_messages(
+                    normalized_messages=session_body_messages,
+                    token=token,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    auth_mode=auth_mode,
+                    http_client=self._get_shared_client(),
+                    base_url=self.base_url,
+                )
+            else:
+                # Direct mode: process all messages (full history)
+                messages, files = await process_multimodal_messages(
+                    normalized_messages=normalized_messages,
+                    token=token,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    auth_mode=auth_mode,
+                    http_client=self._get_shared_client(),
+                    base_url=self.base_url,
+                )
 
             if tools:
                 self.logger.debug(
@@ -746,6 +797,7 @@ class UpstreamClient:
                 mcp_servers=features["mcp_servers"],
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                parent_message_id=parent_id,
             )
             # 对齐浏览器：current_user_message_id 使用和 chats/new 一致的 ID
             body["current_user_message_id"] = user_msg_id

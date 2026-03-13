@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     )
 
     # Session / Continuous Conversation Configuration
-    SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "true").lower() == "true"
+    SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "false").lower() == "true"
     SESSION_TTL: int = int(os.getenv("SESSION_TTL", "3600"))           # 会话 TTL（秒）
     SESSION_MAX_PER_CLIENT: int = int(os.getenv("SESSION_MAX_PER_CLIENT", "50"))  # 每客户端最大会话数
     SESSION_CLEANUP_INTERVAL: int = int(os.getenv("SESSION_CLEANUP_INTERVAL", "300"))  # 清理间隔（秒）

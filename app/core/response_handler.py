@@ -620,7 +620,7 @@ class ResponseHandler:
         error_detail = sse_error.get("detail", "Unknown upstream error")
 
         if data.get("done") is True:
-            self.logger.warning(
+            self.logger.debug(
                 "⚠️ 上游 SSE 在 done 状态返回错误 (容忍忽略): code={}, detail={}",
                 error_code_val,
                 error_detail,
