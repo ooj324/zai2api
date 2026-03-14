@@ -17,6 +17,7 @@ import json
 import re
 import secrets
 import string
+import textwrap
 import uuid
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
@@ -178,8 +179,11 @@ STRICT ARGUMENT KEY RULES:
 - You MUST use parameter keys EXACTLY as defined (case- and punctuation-sensitive). Do NOT rename, add, or remove characters.
 - If a key starts with a hyphen (e.g., "-i", "-C"), you MUST keep the leading hyphen in the JSON key. Never convert "-i" to "i" or "-C" to "C".
 - The <tool> tag must contain the exact name of a tool from the list. Any other tool name is invalid.
-- The <args_json> tag must contain a single JSON object with all required arguments for that tool.
-- You MAY wrap the JSON content inside <![CDATA[...]]> to avoid XML escaping issues.
+- Use <args_json> when all arguments are short and easy to encode as JSON.
+- If any string argument contains multi-line text, source code, quotes, XML-like text, or other content that is hard to escape safely in JSON, you MUST use <args_kv> for those string arguments instead of putting them into <args_json>.
+- In <args_kv>, each argument MUST be encoded as <arg name="EXACT_KEY">VALUE</arg>.
+- You MAY combine both tags in the same <function_call>: keep simple/scalar values in <args_json> and put complex multi-line string values in <args_kv>.
+- For <args_kv>, use <![CDATA[...]]> inside <arg> whenever the value contains code, quotes, or multiple lines.
 
 CORRECT Example (multiple tool calls):
 ...response content (optional)...
@@ -195,6 +199,24 @@ CORRECT Example (multiple tool calls):
     </function_call>
   </function_calls>
 
+CORRECT Example (large code string via args_kv):
+...response content (optional)...
+{trigger_signal}
+<function_calls>
+    <function_call>
+        <tool>Edit</tool>
+        <args_json><![CDATA[{{"filePath": "/tmp/AppShell.vue"}}]]></args_json>
+        <args_kv>
+            <arg name="oldText"><![CDATA[const navItems = [
+  {{ to: "/dashboard", label: "Dashboard" }}
+];]]></arg>
+            <arg name="newText"><![CDATA[const navItems = [
+  {{ to: "/dashboard", label: "仪表盘" }}
+];]]></arg>
+        </args_kv>
+    </function_call>
+</function_calls>
+
 INCORRECT Example (extra text + wrong key names — DO NOT DO THIS):
 ...response content (optional)...
 {trigger_signal}
@@ -207,6 +229,16 @@ I will call the tools for you.
             <C>2</C>
             <path>.</path>
         </args>
+    </function_call>
+</function_calls>
+
+INCORRECT Example (do not put raw multi-line code directly into args_json):
+<function_calls>
+    <function_call>
+        <tool>Edit</tool>
+        <args_json><![CDATA[{{"filePath": "/tmp/AppShell.vue", "oldText": "const navItems = [
+  {{ to: "/dashboard", label: "Dashboard" }}
+];"}}]]></args_json>
     </function_call>
 </function_calls>
 
@@ -418,6 +450,12 @@ _KNOWN_TAG_REPAIRS: List[tuple] = [
         re.compile(r'<\s*args[\s_-]*json\s*>', re.IGNORECASE),
         re.compile(r'</\s*args[\s_-]*json\s*>', re.IGNORECASE),
         '<args_json>', '</args_json>',
+    ),
+    # args_kv  (兼容: argskv, args-kv, ARGS_KV 等)
+    (
+        re.compile(r'<\s*args[\s_-]*kv\s*>', re.IGNORECASE),
+        re.compile(r'</\s*args[\s_-]*kv\s*>', re.IGNORECASE),
+        '<args_kv>', '</args_kv>',
     ),
     # args  (仅在单独出现时)
     (
@@ -702,6 +740,65 @@ def _extract_cdata_text(raw: str) -> str:
     return raw
 
 
+def _parse_args_kv_text(raw: Optional[str], *, from_xml: bool = False) -> str:
+    """解析 args_kv 中单个 arg 的文本值。
+
+    - CDATA 内容保持原样
+    - 普通文本做轻量 strip
+    - 多行普通文本做 dedent 后 strip，避免 XML 排版缩进污染值
+    """
+    if raw is None:
+        return ""
+
+    if not from_xml and "<![CDATA[" in raw:
+        return _extract_cdata_text(raw)
+
+    text = str(raw)
+    if "\n" in text or "\r" in text:
+        return textwrap.dedent(text).strip("\r\n")
+    return text.strip()
+
+
+def _parse_args_kv_elements(args_kv_el: ET.Element) -> Dict[str, Any]:
+    """从 ET 节点解析 <args_kv><arg name=\"...\">...</arg></args_kv>。"""
+    args: Dict[str, Any] = {}
+    for child in list(args_kv_el):
+        tag_name = str(getattr(child, "tag", "") or "").lower().replace("-", "_")
+        if tag_name != "arg":
+            continue
+        key = str(child.attrib.get("name") or child.attrib.get("key") or "").strip()
+        if not key:
+            continue
+        args[key] = _parse_args_kv_text(child.text, from_xml=True)
+    return args
+
+
+_ARG_BLOCK_RE = re.compile(
+    r"<\s*arg\b([^>]*)>([\s\S]*?)</\s*arg\s*>",
+    re.IGNORECASE,
+)
+_ARG_NAME_ATTR_RE = re.compile(
+    r"""\b(?:name|key)\s*=\s*(?:"([^"]*)"|'([^']*)')""",
+    re.IGNORECASE,
+)
+
+
+def _parse_args_kv_block(raw_inner: str) -> Dict[str, Any]:
+    """从正则 fallback 路径解析 args_kv 块。"""
+    args: Dict[str, Any] = {}
+    for match in _ARG_BLOCK_RE.finditer(raw_inner or ""):
+        attrs = match.group(1) or ""
+        payload = match.group(2)
+        name_match = _ARG_NAME_ATTR_RE.search(attrs)
+        if not name_match:
+            continue
+        key = str(name_match.group(1) or name_match.group(2) or "").strip()
+        if not key:
+            continue
+        args[key] = _parse_args_kv_text(payload, from_xml=False)
+    return args
+
+
 def repair_unclosed_cdata(xml_str: str) -> str:
     """为 XML 字符串中所有未闭合的 CDATA 段补充 ]]> 终止符。
 
@@ -884,6 +981,7 @@ def parse_function_calls_xml(
                 continue
 
             args: Dict[str, Any] = {}
+            has_structured_args = False
 
             args_json_el = fc.find("args_json")
             if args_json_el is not None:
@@ -894,7 +992,14 @@ def parse_function_calls_xml(
                     logger.debug("🔧 function_call #{} 的 args_json 无效; 视为解析失败", i + 1)
                     return None
                 args = parsed_args
-            else:
+                has_structured_args = True
+
+            args_kv_el = fc.find("args_kv")
+            if args_kv_el is not None:
+                args.update(_parse_args_kv_elements(args_kv_el))
+                has_structured_args = True
+
+            if not has_structured_args:
                 # Legacy fallback: <args><k>json</k></args>
                 args_el = fc.find("args")
                 if args_el is not None:
@@ -920,6 +1025,7 @@ def parse_function_calls_xml(
 
         name = tool_match.group(1).strip()
         args: Dict[str, Any] = {}
+        has_structured_args = False
 
         # 容错的 args_json 提取（PR #8 改进）
         args_json_open = block.find("<args_json>")
@@ -932,6 +1038,7 @@ def parse_function_calls_xml(
                 logger.debug("🔧 function_call #{} (正则) args_json 无效; 视为解析失败", i + 1)
                 return None
             args = parsed_args
+            has_structured_args = True
         elif args_json_open != -1 and args_json_close == -1:
             # ★ 流式截断: <args_json> 存在但 </args_json> 缺失
             # 取 <args_json> 之后的全部内容尝试解析
@@ -943,11 +1050,18 @@ def parse_function_calls_xml(
                     f"🔧 function_call #{i+1} (正则) args_json 流式截断恢复成功: {list(parsed_args.keys())}"
                 )
                 args = parsed_args
+                has_structured_args = True
             else:
                 logger.debug(
                     f"🔧 function_call #{i+1} (正则) args_json 流式截断恢复失败, 使用空 args"
                 )
-        else:
+
+        args_kv_match = re.search(r"<args_kv>([\s\S]*?)</args_kv>", block)
+        if args_kv_match:
+            args.update(_parse_args_kv_block(args_kv_match.group(1)))
+            has_structured_args = True
+
+        if not has_structured_args:
             args_block_match = re.search(r"<args>([\s\S]*?)</args>", block)
             if args_block_match:
                 args_inner = args_block_match.group(1)
@@ -1311,6 +1425,12 @@ def looks_like_complete_function_calls(buf: str) -> bool:
     if buf.count("<function_call>") != buf.count("</function_call>"):
         return False
     if ("<args_json>" in buf or "</args_json>" in buf) and buf.count("<args_json>") != buf.count("</args_json>"):
+        return False
+    if ("<args_kv>" in buf or "</args_kv>" in buf) and buf.count("<args_kv>") != buf.count("</args_kv>"):
+        return False
+    arg_open_count = len(re.findall(r'<\s*arg\b[^>]*>', buf, flags=re.IGNORECASE))
+    arg_close_count = len(re.findall(r'</\s*arg\s*>', buf, flags=re.IGNORECASE))
+    if (arg_open_count or arg_close_count) and arg_open_count != arg_close_count:
         return False
     if ("<![CDATA[" in buf or "]]>" in buf) and buf.count("<![CDATA[") != buf.count("]]>"):
         return False

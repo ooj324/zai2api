@@ -26,6 +26,22 @@ READ_TOOL = {
     },
 }
 
+EDIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "Edit",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filePath": {"type": "string"},
+                "oldText": {"type": "string"},
+                "newText": {"type": "string"},
+            },
+            "required": ["filePath", "oldText", "newText"],
+        },
+    },
+}
+
 
 class MockResponse:
     def __init__(self, chunks):
@@ -53,6 +69,23 @@ def _build_transformed():
     }
 
 
+def _build_edit_request() -> OpenAIRequest:
+    return OpenAIRequest(
+        model="GLM-5-Thinking",
+        messages=[{"role": "user", "content": "edit file"}],
+        tools=[EDIT_TOOL],
+        stream=True,
+    )
+
+
+def _build_edit_transformed():
+    return {
+        "trigger_signal": "<Function_TEST_Start/>",
+        "tools": [EDIT_TOOL],
+        "tool_strategy": "xmlfc",
+    }
+
+
 async def _collect_outputs(chunks):
     handler = ResponseHandler()
     response = MockResponse(chunks)
@@ -63,6 +96,21 @@ async def _collect_outputs(chunks):
         "GLM-5-Thinking",
         _build_request(),
         _build_transformed(),
+    ):
+        outputs.append(item)
+    return outputs
+
+
+async def _collect_edit_outputs(chunks):
+    handler = ResponseHandler()
+    response = MockResponse(chunks)
+    outputs = []
+    async for item in handler.handle_stream_response(
+        response,
+        "chat_edit_test",
+        "GLM-5-Thinking",
+        _build_edit_request(),
+        _build_edit_transformed(),
     ):
         outputs.append(item)
     return outputs
@@ -137,3 +185,29 @@ def test_streaming_bare_xml_with_trailing_text_is_replayed_as_content():
     assert finish_reason == "stop"
     assert "<function_calls>" in content_text
     assert "后面还有解释文本" in content_text
+
+
+def test_streaming_triggered_args_kv_edit_tool_parses():
+    chunks = [
+        'data: {"type":"chat:completion","data":{"phase":"answer","delta_content":"<Function_TEST_Start/>\\n<function_calls>\\n<function_call>\\n<tool>Edit</tool>\\n<args_json><![CDATA[{\\"filePath\\": \\"/tmp/AppShell.vue\\"}]]></args_json>\\n<args_kv>\\n"}}',
+        'data: {"type":"chat:completion","data":{"phase":"answer","delta_content":"<arg name=\\"oldText\\"><![CDATA[const navItems = [\\n  { to: \\"/dashboard\\", label: \\"Dashboard\\" },\\n];]]></arg>\\n"}}',
+        'data: {"type":"chat:completion","data":{"phase":"answer","delta_content":"<arg name=\\"newText\\"><![CDATA[const navItems = [\\n  { to: \\"/dashboard\\", label: \\"仪表盘\\" },\\n];]]></arg>\\n</args_kv>\\n</function_call>\\n</function_calls>"}}',
+    ]
+
+    outputs = asyncio.run(_collect_edit_outputs(chunks))
+    payloads = _extract_chunks(outputs)
+
+    tool_calls = []
+    finish_reason = None
+    for payload in payloads:
+        choice = payload["choices"][0]
+        finish_reason = choice.get("finish_reason") or finish_reason
+        delta = choice.get("delta", {})
+        tool_calls.extend(delta.get("tool_calls", []) or [])
+
+    assert len(tool_calls) == 1
+    assert finish_reason == "tool_calls"
+    arguments = json.loads(tool_calls[0]["function"]["arguments"])
+    assert arguments["filePath"] == "/tmp/AppShell.vue"
+    assert 'label: "Dashboard"' in arguments["oldText"]
+    assert 'label: "仪表盘"' in arguments["newText"]

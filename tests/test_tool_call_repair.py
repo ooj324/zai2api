@@ -334,6 +334,53 @@ class TestParseEndToEnd:
         )
         assert result is None
 
+    def test_args_kv_preserves_multiline_code_strings(self):
+        """大段代码字符串应通过 args_kv 传输，而不是依赖 JSON 转义。"""
+        xml = f"""{self.TRIGGER}
+<function_calls>
+<function_call>
+<tool>Edit</tool>
+<args_json><![CDATA[{{"filePath": "/tmp/AppShell.vue"}}]]></args_json>
+<args_kv>
+<arg name="oldText"><![CDATA[const navItems = [
+  {{ to: "/dashboard", label: "Dashboard", icon: "chart" }},
+  {{ to: "/models", label: "Models", icon: "box" }},
+];]]></arg>
+<arg name="newText"><![CDATA[const navItems = [
+  {{ to: "/dashboard", label: "仪表盘", icon: "chart" }},
+  {{ to: "/models", label: "模型", icon: "box" }},
+];]]></arg>
+</args_kv>
+</function_call>
+</function_calls>"""
+
+        result = parse_function_calls_xml(xml, self.TRIGGER)
+        assert result is not None
+        assert result[0]["name"] == "Edit"
+        assert result[0]["args"]["filePath"] == "/tmp/AppShell.vue"
+        assert 'label: "Dashboard"' in result[0]["args"]["oldText"]
+        assert 'label: "仪表盘"' in result[0]["args"]["newText"]
+
+    def test_args_kv_with_uppercase_arg_tags_works(self):
+        """args_kv 子节点标签大小写变化时也应能解析。"""
+        xml = f"""{self.TRIGGER}
+<function_calls>
+<function_call>
+<tool>Edit</tool>
+<args_kv>
+<ARG name="oldText"><![CDATA[line 1
+line 2 "quoted"]]></ARG>
+<ARG name="newText"><![CDATA[line 1
+line 2 translated]]></ARG>
+</args_kv>
+</function_call>
+</function_calls>"""
+
+        result = parse_function_calls_xml(xml, self.TRIGGER)
+        assert result is not None
+        assert result[0]["args"]["oldText"] == 'line 1\nline 2 "quoted"'
+        assert result[0]["args"]["newText"] == "line 1\nline 2 translated"
+
 
 # ===========================================================================
 # 8. looks_like_complete_function_calls — 畸形标签计数
