@@ -26,6 +26,13 @@ from app.utils.logger import get_logger
 logger = get_logger()
 
 _FALLBACK_TRIGGER_RE = re.compile(r"<Function_[A-Za-z0-9]{4}_Start/>")
+_BARE_FUNCTION_CALLS_OPEN_RE = re.compile(
+    r"<\s*function[\s_-]*calls\s*>",
+    re.IGNORECASE,
+)
+_FUNCTION_CALLS_BLOCK_RE = re.compile(
+    r"<function_calls>([\s\S]*?)</function_calls>"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -731,9 +738,96 @@ def repair_unclosed_cdata(xml_str: str) -> str:
     return result
 
 
+def _find_last_function_calls_match(
+    text: str,
+    *,
+    tail_only: bool = False,
+) -> Optional[re.Match[str]]:
+    """查找最后一个完整的 <function_calls> 块。
+
+    Args:
+        text: 已做 think 清理和标签归一化的文本。
+        tail_only: 为 True 时要求 </function_calls> 后仅剩空白。
+    """
+    last_match: Optional[re.Match[str]] = None
+    for match in _FUNCTION_CALLS_BLOCK_RE.finditer(text or ""):
+        if tail_only and text[match.end():].strip():
+            continue
+        last_match = match
+    return last_match
+
+
+def locate_function_calls_block(
+    xml_string: str,
+    trigger_signal: str = "",
+    *,
+    allow_bare: bool = False,
+    bare_tail_only: bool = False,
+) -> Optional[Tuple[str, str, str]]:
+    """定位当前回复中的工具调用 XML 块。
+
+    Returns:
+        (calls_xml, calls_content, source)
+        source in {"trigger", "bare"}
+    """
+    if not xml_string:
+        return None
+
+    cleaned_content = remove_think_blocks(xml_string)
+
+    # ★ 先对内容做 XML 通配修复 (标签名/CDATA), 让后续搜索能匹配到畸形标签
+    original_cleaned = cleaned_content
+    cleaned_content = normalize_xml_structure(cleaned_content)
+    if cleaned_content != original_cleaned:
+        logger.debug(
+            "🔧 XML 结构已修复 ({} → {} 字符)",
+            len(original_cleaned),
+            len(cleaned_content),
+        )
+
+    if trigger_signal and trigger_signal in cleaned_content:
+        signal_positions = []
+        start_pos = 0
+        while True:
+            pos = cleaned_content.find(trigger_signal, start_pos)
+            if pos == -1:
+                break
+            signal_positions.append(pos)
+            start_pos = pos + 1
+
+        for idx in range(len(signal_positions) - 1, -1, -1):
+            pos = signal_positions[idx]
+            sub = cleaned_content[pos:]
+            match = _FUNCTION_CALLS_BLOCK_RE.search(sub)
+            if match:
+                logger.debug("🔧 使用触发信号 index {}, pos {}", idx, pos)
+                return match.group(0), match.group(1), "trigger"
+
+        logger.debug("🔧 触发信号后未找到 <function_calls> 标签")
+
+    if allow_bare:
+        match = _find_last_function_calls_match(
+            cleaned_content,
+            tail_only=bare_tail_only,
+        )
+        if match:
+            logger.debug(
+                "🔧 使用 bare XML 兜底定位 <function_calls>, tail_only={}",
+                bare_tail_only,
+            )
+            return match.group(0), match.group(1), "bare"
+
+        logger.debug("🔧 bare XML 兜底未找到可用的 <function_calls> 块")
+
+    return None
+
+
 def parse_function_calls_xml(
     xml_string: str,
     trigger_signal: str,
+    *,
+    allow_bare: bool = False,
+    bare_tail_only: bool = False,
 ) -> Optional[List[Dict[str, Any]]]:
     """
     解析 XML 格式的工具调用
@@ -745,50 +839,30 @@ def parse_function_calls_xml(
     Returns:
         解析出的工具调用列表 [{"name": str, "args": dict}, ...] 或 None
     """
-    logger.debug("🔧 XML 解析开始, 输入长度: {}", len(xml_string) if xml_string else 0)
+    logger.debug(
+        "🔧 XML 解析开始, 输入长度: {}, allow_bare={}, tail_only={}",
+        len(xml_string) if xml_string else 0,
+        allow_bare,
+        bare_tail_only,
+    )
 
-    if not xml_string or trigger_signal not in xml_string:
-        logger.debug("🔧 输入为空或不包含触发信号")
+    if not xml_string:
+        logger.debug("🔧 输入为空")
         return None
 
-    cleaned_content = remove_think_blocks(xml_string)
-
-    # ★ 先对内容做 XML 通配修复 (标签名/CDATA), 让后续搜索能匹配到畸形标签
-    original_cleaned = cleaned_content
-    cleaned_content = normalize_xml_structure(cleaned_content)
-    if cleaned_content != original_cleaned:
-        logger.debug("🔧 XML 结构已修复 ({} → {} 字符)", len(original_cleaned), len(cleaned_content))
-
-    # 查找所有触发信号位置
-    signal_positions = []
-    start_pos = 0
-    while True:
-        pos = cleaned_content.find(trigger_signal, start_pos)
-        if pos == -1:
-            break
-        signal_positions.append(pos)
-        start_pos = pos + 1
-
-    if not signal_positions:
+    located = locate_function_calls_block(
+        xml_string,
+        trigger_signal,
+        allow_bare=allow_bare,
+        bare_tail_only=bare_tail_only,
+    )
+    if located is None:
+        if trigger_signal and not allow_bare:
+            logger.debug("🔧 输入为空或不包含触发信号")
         return None
 
-    # 从最后一个触发信号开始找 <function_calls>
-    calls_content_match = None
-    for idx in range(len(signal_positions) - 1, -1, -1):
-        pos = signal_positions[idx]
-        sub = cleaned_content[pos:]
-        m = re.search(r"<function_calls>([\s\S]*?)</function_calls>", sub)
-        if m:
-            calls_content_match = m
-            logger.debug("🔧 使用触发信号 index {}, pos {}", idx, pos)
-            break
-
-    if calls_content_match is None:
-        logger.debug("🔧 未找到 <function_calls> 标签")
-        return None
-
-    calls_xml = calls_content_match.group(0)
-    calls_content = calls_content_match.group(1)
+    calls_xml, calls_content, source = located
+    logger.debug("🔧 XML 块定位成功, source={}", source)
 
     def _coerce_value(v: str):
         try:
@@ -1050,11 +1124,12 @@ class StreamingFunctionCallDetector:
 
     def reset(self):
         self.content_buffer = ""
-        self.state = "detecting"  # detecting, tool_parsing
+        self.state = "detecting"  # detecting, tool_candidate, tool_parsing
         self.in_think_block = False
         self.think_depth = 0
         self.signal = self.trigger_signal
         self.signal_len = len(self.signal)
+        self.bare_open_len = len("<function_calls>")
 
     def process_chunk(self, delta_content: str) -> Tuple[bool, str]:
         """处理流式内容片段
@@ -1067,7 +1142,7 @@ class StreamingFunctionCallDetector:
 
         self.content_buffer += delta_content
 
-        if self.state == "tool_parsing":
+        if self.state in ("tool_parsing", "tool_candidate"):
             return False, ""
 
         buf = self.content_buffer
@@ -1111,9 +1186,18 @@ class StreamingFunctionCallDetector:
                     self.content_buffer = buf[i:]
                     return True, "".join(parts)
 
+                # --- 低置信兜底：允许直接以 <function_calls> 开头 ---
+                bare_match = _BARE_FUNCTION_CALLS_OPEN_RE.match(buf, i)
+                if bare_match and self._line_prefix_is_whitespace(buf, i):
+                    logger.debug("🔧 检测到 bare <function_calls>, 进入候选解析模式")
+                    self.state = "tool_candidate"
+                    self.content_buffer = buf[i:]
+                    return True, "".join(parts)
+
             # --- look-ahead 保留：尾部可能是不完整的标签/信号 ---
             remaining_len = buf_len - i
-            if remaining_len < self.signal_len or remaining_len < 8:
+            lookahead_len = max(self.signal_len, self.bare_open_len, 8)
+            if remaining_len < lookahead_len:
                 break
 
             # --- 批量跳转到下一个感兴趣的位置 ---
@@ -1127,13 +1211,13 @@ class StreamingFunctionCallDetector:
             else:
                 # 找 <think> 或信号首字符，取最近的
                 next_think = buf.find('<think>', search_start)
-                next_signal = buf.find(self.signal[0], search_start) if self.signal else -1
+                next_signal = buf.find("<", search_start)
                 candidates = [c for c in (next_think, next_signal) if c != -1]
                 next_pos = min(candidates) if candidates else -1
 
             if next_pos == -1:
                 # 没有更多感兴趣位置，批量输出到 look-ahead 边界
-                safe_end = buf_len - max(self.signal_len, 8) + 1
+                safe_end = buf_len - lookahead_len + 1
                 if safe_end > i:
                     parts.append(buf[i:safe_end])
                     i = safe_end
@@ -1141,7 +1225,7 @@ class StreamingFunctionCallDetector:
                     break
             else:
                 # 批量输出到目标位置前（但尊重 look-ahead 边界）
-                safe_end = min(next_pos, buf_len - max(self.signal_len, 8) + 1)
+                safe_end = min(next_pos, buf_len - lookahead_len + 1)
                 if safe_end > i:
                     parts.append(buf[i:safe_end])
                     i = safe_end
@@ -1165,6 +1249,16 @@ class StreamingFunctionCallDetector:
             return 8
         return 0
 
+    @staticmethod
+    def _line_prefix_is_whitespace(buf: str, pos: int) -> bool:
+        """检查当前位置是否位于新行起始处（允许前导空白）。"""
+        line_start = buf.rfind("\n", 0, pos)
+        if line_start == -1:
+            prefix = buf[:pos]
+        else:
+            prefix = buf[line_start + 1:pos]
+        return not prefix.strip()
+
     def flush(self) -> str:
         """流结束时刷出被 look-ahead 保留的剩余内容。
 
@@ -1175,10 +1269,23 @@ class StreamingFunctionCallDetector:
         self.content_buffer = ""
         return remaining
 
+    def reject_candidate(self) -> str:
+        """候选 bare XML 解析失败时，将缓冲区恢复为普通文本。"""
+        remaining = self.content_buffer
+        self.reset()
+        return remaining
+
     def finalize(self) -> Optional[List[Dict[str, Any]]]:
         """流结束时的最终处理"""
         if self.state == "tool_parsing":
             return parse_function_calls_xml(self.content_buffer, self.trigger_signal)
+        if self.state == "tool_candidate":
+            return parse_function_calls_xml(
+                self.content_buffer,
+                self.trigger_signal,
+                allow_bare=True,
+                bare_tail_only=True,
+            )
         return None
 
 

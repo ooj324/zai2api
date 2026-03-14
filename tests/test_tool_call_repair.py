@@ -293,6 +293,47 @@ class TestParseEndToEnd:
         assert result[0]["name"] == "Grep"
         assert result[0]["args"] == {"pattern": "hello"}
 
+    def test_bare_xml_without_trigger_can_fallback(self):
+        """模型漏掉 trigger 时，仍可用 bare XML 兜底解析。"""
+        xml = """
+先读两个文件
+<function_calls>
+<function_call>
+<tool>Read</tool>
+<args_json><![CDATA[{"file_path": "/tmp/demo.txt"}]]></args_json>
+</function_call>
+</function_calls>"""
+
+        result = parse_function_calls_xml(
+            xml,
+            "",
+            allow_bare=True,
+            bare_tail_only=True,
+        )
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["name"] == "Read"
+        assert result[0]["args"] == {"file_path": "/tmp/demo.txt"}
+
+    def test_bare_xml_with_trailing_text_is_rejected(self):
+        """低置信 bare XML 仅允许位于输出尾部。"""
+        xml = """
+<function_calls>
+<function_call>
+<tool>Read</tool>
+<args_json><![CDATA[{"file_path": "/tmp/demo.txt"}]]></args_json>
+</function_call>
+</function_calls>
+后面还有解释文本"""
+
+        result = parse_function_calls_xml(
+            xml,
+            "",
+            allow_bare=True,
+            bare_tail_only=True,
+        )
+        assert result is None
+
 
 # ===========================================================================
 # 8. looks_like_complete_function_calls — 畸形标签计数

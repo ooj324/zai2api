@@ -76,7 +76,7 @@ class ToolifyHandler:
         if (
             not detector
             or not current_text
-            or detector.state == "tool_parsing"
+            or detector.state != "detecting"
             or phase == "thinking"
         ):
             return None
@@ -108,9 +108,14 @@ class ToolifyHandler:
     ) -> Optional[List[str]]:
         """累积工具调用 XML 并尝试解析。"""
         detector = getattr(ctx, "detector", None)
-        if not detector or detector.state != "tool_parsing" or not current_text:
+        if (
+            not detector
+            or detector.state not in ("tool_parsing", "tool_candidate")
+            or not current_text
+        ):
             return None
 
+        parsing_mode = detector.state
         detector.content_buffer += current_text
 
         if "</function_calls>" not in detector.content_buffer:
@@ -120,18 +125,43 @@ class ToolifyHandler:
             logger.debug("🔧 检测到 </function_calls> 但内容不完整, 继续缓冲")
             return []
 
+        if (
+            parsing_mode == "tool_candidate"
+            and detector.content_buffer.rstrip().endswith("</function_calls>")
+        ):
+            logger.debug("🔧 bare XML 候选已闭合, 等待尾部确认或流结束后再解析")
+            return []
+
         logger.debug("🔧 检测到完整的 </function_calls>, 开始解析...")
         active_trigger = (
             str(getattr(detector, "trigger_signal", "") or "")
             or str(getattr(ctx, "trigger_signal", "") or "")
         )
-        parsed = parse_function_calls_xml(detector.content_buffer, active_trigger)
+        allow_bare = parsing_mode == "tool_candidate"
+        parsed = parse_function_calls_xml(
+            detector.content_buffer,
+            active_trigger,
+            allow_bare=allow_bare,
+            bare_tail_only=allow_bare,
+        )
         if not parsed:
+            if allow_bare:
+                logger.debug("🔧 bare XML 候选解析失败, 恢复为普通文本输出")
+                recovered = detector.reject_candidate()
+                if recovered and self.emit_func:
+                    return self.emit_func(ctx, {"content": recovered})
+                return []
             logger.warning("⚠️ 检测到 </function_calls> 但 XML 解析失败, 继续缓冲")
             return []
 
         validation_err = validate_parsed_tools(parsed, getattr(ctx, "tools_defs", None))
         if validation_err:
+            if allow_bare:
+                logger.debug("🔧 bare XML 候选 Schema 验证失败, 恢复为普通文本输出: {}", validation_err)
+                recovered = detector.reject_candidate()
+                if recovered and self.emit_func:
+                    return self.emit_func(ctx, {"content": recovered})
+                return []
             logger.warning("⚠️ 流式工具 Schema 验证失败: {}", validation_err)
             return []
 
@@ -177,37 +207,41 @@ class ToolifyHandler:
                     )
                     setattr(ctx, "trigger_signal", active_trigger)
 
-        if active_trigger and active_trigger in buffered_content:
-            parsed = parse_function_calls_xml(buffered_content, active_trigger)
-            if parsed:
-                validation_err = validate_parsed_tools(parsed, tools_defs)
-                if validation_err:
-                    logger.warning("⚠️ 流结束时 Schema 验证失败: {}", validation_err)
-                    usable = [
-                        p
-                        for p in parsed
-                        if p.get("name")
-                        and isinstance(p.get("args"), dict)
-                        and p["args"]
-                    ]
-                    if usable:
-                        logger.warning(
-                            "⚠️ Schema 验证失败但参数非空, 强制发送 {} 个工具调用",
-                            len(usable),
-                        )
-                        self._append_tool_calls_output(
-                            ctx,
-                            output,
-                            self._build_tool_call_chunks(ctx, usable),
-                            usable,
-                        )
-                else:
+        parsed = parse_function_calls_xml(
+            buffered_content,
+            active_trigger,
+            allow_bare=True,
+            bare_tail_only=True,
+        )
+        if parsed:
+            validation_err = validate_parsed_tools(parsed, tools_defs)
+            if validation_err:
+                logger.warning("⚠️ 流结束时 Schema 验证失败: {}", validation_err)
+                usable = [
+                    p
+                    for p in parsed
+                    if p.get("name")
+                    and isinstance(p.get("args"), dict)
+                    and p["args"]
+                ]
+                if usable:
+                    logger.warning(
+                        "⚠️ Schema 验证失败但参数非空, 强制发送 {} 个工具调用",
+                        len(usable),
+                    )
                     self._append_tool_calls_output(
                         ctx,
                         output,
-                        self._build_tool_call_chunks(ctx, parsed),
-                        parsed,
+                        self._build_tool_call_chunks(ctx, usable),
+                        usable,
                     )
+            else:
+                self._append_tool_calls_output(
+                    ctx,
+                    output,
+                    self._build_tool_call_chunks(ctx, parsed),
+                    parsed,
+                )
 
         if not ctx.tool_calls_accum:
             json_parsed, _ = parse_and_extract_tool_calls(buffered_content)
@@ -254,22 +288,30 @@ class ToolifyHandler:
             if matches:
                 active_trigger = matches[-1]
 
-        if active_trigger and active_trigger in cleaned_content:
-            parsed = parse_function_calls_xml(cleaned_content, active_trigger)
-            if parsed:
-                validation_err = validate_parsed_tools(parsed, tools_defs)
-                if not validation_err:
-                    normalized = self._normalize_xml_tools(parsed)
-                    if normalized:
-                        tool_calls_accum = normalized
-                        trigger_pos = cleaned_content.find(active_trigger)
-                        if trigger_pos >= 0:
-                            cleaned_content = cleaned_content[:trigger_pos].strip()
-                        logger.info(
-                            "[tools] XML parse success: {} tools", len(normalized)
-                        )
-                else:
-                    logger.warning("⚠️ 非流式 Schema 验证失败: {}", validation_err)
+        parsed = parse_function_calls_xml(
+            cleaned_content,
+            active_trigger,
+            allow_bare=True,
+            bare_tail_only=True,
+        )
+        if parsed:
+            validation_err = validate_parsed_tools(parsed, tools_defs)
+            if not validation_err:
+                normalized = self._normalize_xml_tools(parsed)
+                if normalized:
+                    tool_calls_accum = normalized
+                    trigger_pos = cleaned_content.find(active_trigger) if active_trigger else -1
+                    if trigger_pos >= 0:
+                        cleaned_content = cleaned_content[:trigger_pos].strip()
+                    else:
+                        bare_idx = cleaned_content.rfind("<function_calls>")
+                        if bare_idx >= 0:
+                            cleaned_content = cleaned_content[:bare_idx].rstrip()
+                    logger.info(
+                        "[tools] XML parse success: {} tools", len(normalized)
+                    )
+            else:
+                logger.warning("⚠️ 非流式 Schema 验证失败: {}", validation_err)
 
         if not tool_calls_accum:
             parsed_tool_calls, extracted_content = parse_and_extract_tool_calls(

@@ -338,16 +338,33 @@ class ResponseHandler:
     # ==================================================================
 
     @staticmethod
+    def _count_tail_pattern_repeats(text: str, pattern: str) -> int:
+        """统计文本尾部有多少个连续重复的 pattern。"""
+        if not text or not pattern:
+            return 0
+
+        plen = len(pattern)
+        repeats = 0
+        cursor = len(text)
+
+        while cursor >= plen and text[cursor - plen : cursor] == pattern:
+            repeats += 1
+            cursor -= plen
+
+        return repeats
+
+    @staticmethod
     def _detect_repetition_loop(
         text: str,
         min_pattern_len: int = 10,
         min_repeats: int = 8,
         max_pattern_len: int = 60,
     ) -> Optional[str]:
-        """检测文本是否进入重复循环。
+        """检测文本尾部是否进入连续重复循环。
 
-        在滑动窗口中查找短模式的高频重复。当一个 10–60 字符的子串
-        在窗口中出现 8+ 次时，判定为重复循环。
+        仅当最近输出以同一个 10–60 字符模式连续重复 8+ 次结束时，
+        才判定为重复循环。这样可以避免把 HTML/XML 缩进、模板标签等
+        “窗口内高频但并非连续循环”的内容误判为死循环。
 
         Returns:
             检测到的重复模式，或 None
@@ -358,7 +375,10 @@ class ResponseHandler:
         upper = min(max_pattern_len, len(text) // min_repeats) + 1
         for plen in range(min_pattern_len, upper):
             pattern = text[-plen:]
-            if text.count(pattern) >= min_repeats:
+            repeats = ResponseHandler._count_tail_pattern_repeats(
+                text, pattern
+            )
+            if repeats >= min_repeats:
                 return pattern
 
         return None
@@ -755,7 +775,15 @@ class ResponseHandler:
             检测到重复时返回 error SSE 列表 (调用方应 break)，否则 None。
         """
         phase = ctx.last_phase
+        detector = ctx.detector
         if not current_text or phase in ("thinking", "done"):
+            return None
+
+        if detector and detector.state == "tool_parsing":
+            if ctx.repeat_buffer or ctx.repeat_chunk_count:
+                self.logger.debug("🔧 工具解析期间暂停重复检测并清空计数")
+            ctx.repeat_buffer = ""
+            ctx.repeat_chunk_count = 0
             return None
 
         ctx.repeat_buffer = (ctx.repeat_buffer + current_text)[-500:]
