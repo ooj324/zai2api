@@ -134,6 +134,13 @@ CONFIG_SECTIONS: tuple[ConfigSectionSpec, ...] = (
                 value_type="bool",
                 default_value=False,
             ),
+            ConfigFieldSpec(
+                key="PRECREATE_CHAT",
+                label="预创建 Chat ID",
+                description="直接模式下通过上游接口预创建 chat_id，而非使用随机 UUID。仅在关闭会话管理时生效。",
+                value_type="bool",
+                default_value=False,
+            ),
         ),
     ),
     ConfigSectionSpec(

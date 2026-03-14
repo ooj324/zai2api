@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     SESSION_CLEANUP_INTERVAL: int = int(os.getenv("SESSION_CLEANUP_INTERVAL", "300"))  # 清理间隔（秒）
     SESSION_SYSTEM_INJECT: bool = os.getenv("SESSION_SYSTEM_INJECT", "false").lower() == "true"
     SKIP_AUTH_TOKEN: bool = os.getenv("SKIP_AUTH_TOKEN", "false").lower() == "true"
+    PRECREATE_CHAT: bool = os.getenv("PRECREATE_CHAT", "false").lower() == "true"
 
     # HTTP Timeout Configuration (单位: 秒)
     HTTP_CONNECT_TIMEOUT: float = float(os.getenv("HTTP_CONNECT_TIMEOUT", "5.0"))

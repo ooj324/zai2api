@@ -760,6 +760,15 @@ class UpstreamClient:
                 if session_result:
                     # Continuous session: reuse chat_id, chain via parent_id
                     chat_id = session_result.chat_id
+                    # ── Token 亲和性：链式会话强制使用创建时的 token ──
+                    if session_result.bound_token and session_result.bound_token != token:
+                        self.logger.debug(
+                            "🔒 链式会话 token 亲和: 切换到 bound_token (chat_id={})",
+                            chat_id[:8],
+                        )
+                        await self._release_guest_session(auth_info)
+                        token = session_result.bound_token
+                        user_id = extract_user_id_from_token(token)
                     user_msg_id = session_result.message_id
                     message_id = generate_uuid()
                     parent_id = session_result.parent_id
@@ -838,11 +847,28 @@ class UpstreamClient:
                     base_url=self.base_url,
                 )
             else:
-                # Direct mode: random UUID, no session management
-                chat_id = generate_uuid()
+                # Direct mode: no session management
                 message_id = generate_uuid()
                 user_msg_id = generate_uuid()
                 parent_id = None
+                if settings.PRECREATE_CHAT:
+                    precreate_content = get_precreate_content(
+                        inject_system_prompt(normalized_messages)
+                        if settings.SESSION_SYSTEM_INJECT
+                        else normalized_messages
+                    )
+                    chat_id = await self._precreate_chat(
+                        token=token,
+                        fe_version=fe_version,
+                        model=features["upstream_model_id"],
+                        user_msg_id=user_msg_id,
+                        content=precreate_content,
+                        enable_thinking=features["enable_thinking"],
+                        auto_web_search=features["auto_web_search"],
+                        mcp_servers=features.get("mcp_servers", []),
+                    )
+                else:
+                    chat_id = generate_uuid()
                 direct_messages = (
                     inject_system_prompt(normalized_messages)
                     if settings.SESSION_SYSTEM_INJECT
