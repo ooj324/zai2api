@@ -107,6 +107,9 @@ class StreamContext:
     detector: Optional[StreamingFunctionCallDetector] = None
     tool_strategy: str = "xmlfc"
 
+    # GLM native tool_calls: tool_call 阶段结束后待解析标记
+    glm_tool_calls_pending: bool = False
+
     # ------------------------------------------------------------------
     # 辅助方法
     # ------------------------------------------------------------------
@@ -581,6 +584,12 @@ class ResponseHandler:
             elif phase == "tool_response":
                 pass  # 由 _handle_glm_tool_hint 处理
             elif phase in ("answer", "thinking"):
+                # native/hybrid: tool_call 阶段结束，标记待解析
+                if (
+                    ctx.in_glm_tool_execution
+                    and ctx.tool_strategy in ("native", "hybrid")
+                ):
+                    ctx.glm_tool_calls_pending = True
                 if ctx.in_glm_tool_execution:
                     self.logger.debug(
                         "[glm-tool] 工具执行完毕, 恢复正常输出 (-> {})",
@@ -1046,6 +1055,10 @@ class ResponseHandler:
                 # 累积内容
                 current_text = self._accumulate_content(ctx, data)
 
+                # GLM native tool_calls 提取（tool_call 阶段结束时触发）
+                for sse in self.glm_tool_handler.handle_native_extraction(ctx):
+                    yield sse
+
                 # 上游原生 tool_calls 透传（disabled 时跳过）
                 if ctx.tool_strategy != "disabled":
                     for sse in self._handle_direct_tool_calls(ctx, data):
@@ -1316,6 +1329,22 @@ class ResponseHandler:
             )
 
         final_content = (final_content or "").strip()
+
+        # GLM native tool_calls 提取（native/hybrid 模式，glm_block 清理前）
+        if (
+            not tool_calls_accum
+            and tool_strategy in ("native", "hybrid")
+        ):
+            allowed = GLMToolHandler._extract_tool_names(tools_defs)
+            glm_tool_calls = GLMToolHandler.parse_tool_calls(
+                final_content, allowed_names=allowed,
+            )
+            if glm_tool_calls:
+                self.logger.info(
+                    "🔧 [glm-native] 非流式提取 {} 个工具调用",
+                    len(glm_tool_calls),
+                )
+                tool_calls_accum.extend(glm_tool_calls)
 
         # 清理 GLM 内部工具调用残留
         final_content = self._GLM_BLOCK_FULL_RE.sub("", final_content)
